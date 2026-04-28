@@ -205,11 +205,12 @@ flowchart TD
   google{"Google Play URL?\nplay.google.com/store/apps/details?id=..."}
   appstore["Apple RSS scraper"]
   gplay["Google Play scraper"]
-  providerFirst{"Provider order starts with brightdata?"}
+  providerFirst{"Provider order starts with brightdata or zyte?"}
   brightAll["BrightData multi-page scrape"]
+  providers["Providers: brightdata, zyte, http\n(fetchers like Playwright/Parserr/BS4 live behind these)"]
   parse["Parse reviews"]
   brightOk{"Reviews found?"}
-  pageLoop["For each page_url (page_urls)"]
+  pageLoop["Build page URLs from page_count\nthen iterate each page URL"]
   providerLoop["For each provider in order"]
   fetch["Fetch page via provider"]
   pageOk{"Reviews found on page?"}
@@ -228,7 +229,7 @@ flowchart TD
   brightOk -- yes --> done
   brightOk -- no --> pageLoop
   providerFirst -- no --> pageLoop
-  pageLoop --> providerLoop
+  pageLoop --> providers --> providerLoop
   providerLoop --> fetch --> parse --> pageOk
   pageOk -- yes --> nextPage
   pageOk -- no --> nextProvider

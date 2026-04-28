@@ -5,11 +5,11 @@ Backend-first review ingestion and RAG prototype.
 Current slice:
 
 - FastAPI app serving a static single-page UI.
-- Deterministic CSV, JSON, JSONL, and NDJSON review imports.
+- Deterministic CSV and JSON review imports.
 - URL ingestion through Redis/RQ workers.
 - BrightData, Zyte, direct HTTP, Apple App Store RSS, Google Play, and TripAdvisor parsing paths.
 - Normalized review storage with per-source dedupe.
-- S3-compatible storage for uploaded files so web and worker services can share imports.
+- S3 storage for uploaded files so web and worker services can share imports.
 - pgvector-backed review embeddings generated after ingestion.
 - Saved sessions that group ingested sources and persist chat messages.
 - Scoped RAG chat over the current ingested sources or selected saved session.
@@ -91,10 +91,11 @@ Provision these external resources before deploying:
 
 - PostgreSQL with the `vector` extension available.
 - Redis instance for RQ.
-- S3-compatible bucket for uploaded review files.
+- S3 bucket for uploaded review files. You will need to create IAM roles, policies and keys and grant it read/write access to this bucket
 - OpenAI API key for embeddings and primary chat.
 - Anthropic API key for fallback chat.
 - BrightData and/or Zyte credentials for managed URL scraping.
+- Langsmith for logging LLM interaction
 
 Required Render environment variables:
 
