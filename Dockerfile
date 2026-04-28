@@ -16,6 +16,7 @@ COPY frontend ./frontend
 COPY alembic ./alembic
 COPY alembic.ini ./alembic.ini
 COPY scripts ./scripts
+RUN sed -i 's/\r$//' /app/scripts/start-worker.sh
 
 EXPOSE 8082
 
