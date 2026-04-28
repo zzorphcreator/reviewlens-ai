@@ -34,6 +34,22 @@ def _db_name(database_url: str) -> str:
     return parsed.path.lstrip("/") or "unknown"
 
 
+def _redis_host(redis_url: str) -> str:
+    try:
+        parsed = urlparse(redis_url)
+    except ValueError:
+        return "unknown"
+    return parsed.hostname or "unknown"
+
+
+def _redis_db(redis_url: str) -> str:
+    try:
+        parsed = urlparse(redis_url)
+    except ValueError:
+        return "unknown"
+    return parsed.path.lstrip("/") or "0"
+
+
 class UrlIngestRequest(BaseModel):
     url: str = Field(min_length=1, max_length=2048)
     source_name: str | None = Field(default=None, max_length=255)
@@ -69,7 +85,34 @@ async def ingest_url(
     )
 
     if settings.queue_mode == "rq":
-        scrape_queue.enqueue(scrape_url_task, job.id, source.id, url, payload.page_count, job_timeout=600)
+        try:
+            scrape_queue.enqueue(
+                scrape_url_task, job.id, source.id, url, payload.page_count, job_timeout=600
+            )
+        except Exception as exc:
+            logger.exception(
+                "Failed to enqueue scrape job",
+                extra={
+                    "job_id": job.id,
+                    "queue": scrape_queue.name,
+                    "redis_host": _redis_host(settings.redis_url),
+                    "redis_db": _redis_db(settings.redis_url),
+                },
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Failed to enqueue scrape job.",
+            ) from exc
+        logger.warning(
+            "Enqueued scrape job",
+            extra={
+                "job_id": job.id,
+                "queue": scrape_queue.name,
+                "queue_count": scrape_queue.count,
+                "redis_host": _redis_host(settings.redis_url),
+                "redis_db": _redis_db(settings.redis_url),
+            },
+        )
     else:
         background_tasks.add_task(scrape_url_task_async, job.id, source.id, url, payload.page_count)
 
