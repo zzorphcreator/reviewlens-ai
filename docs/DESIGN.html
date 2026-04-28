@@ -1,0 +1,592 @@
+<h1 id="reviewlens-ai-system-design">ReviewLens AI — System Design</h1>
+<p><strong>Status:</strong> Active design<br />
+<strong>Last updated:</strong> 2026-04-28</p>
+<p>ReviewLens AI ingests product and app reviews from URLs or CSV/JSON uploads, stores normalized reviews in PostgreSQL, embeds review text into pgvector, and exposes a review-scoped RAG chat interface. The current implementation is intentionally backend-first, with a static HTML/vanilla JS frontend served by FastAPI.</p>
+<hr />
+<h2 id="current-architecture">1. Current Architecture</h2>
+<pre class="mermaid"><code>flowchart TB
+  browser[&quot;Browser\nStatic HTML + Tailwind CDN + vanilla JS&quot;]
+  api[&quot;FastAPI web service\nStatic frontend + REST APIs + SSE chat stream&quot;]
+  redis[&quot;Redis\nRQ broker&quot;]
+  worker[&quot;RQ worker\nqueues: import, scrape&quot;]
+  s3[&quot;S3-compatible object storage\nuploaded CSV/JSON files&quot;]
+  db[&quot;PostgreSQL + pgvector\nreviews, sessions, jobs, chunks&quot;]
+  providers[&quot;External review sources\nApple RSS, Google Play, BrightData, Zyte, direct HTTP&quot;]
+  llms[&quot;LLM providers\nOpenAI primary\nAnthropic fallback&quot;]
+  langsmith[&quot;LangSmith\noptional tracing&quot;]
+
+  browser --&gt;|&quot;REST: import/url/session/reviews/jobs&quot;| api
+  browser --&gt;|&quot;SSE over fetch: /api/chat&quot;| api
+  api --&gt;|&quot;enqueue jobs&quot;| redis
+  redis --&gt; worker
+  api --&gt;|&quot;upload file before enqueue&quot;| s3
+  worker --&gt;|&quot;download uploaded file&quot;| s3
+  worker --&gt;|&quot;fetch review pages / feeds&quot;| providers
+  worker --&gt;|&quot;insert reviews + embeddings&quot;| db
+  api --&gt;|&quot;read reviews, sessions, chunks&quot;| db
+  api --&gt;|&quot;embed question + chat completion&quot;| llms
+  worker --&gt;|&quot;embed ingested reviews&quot;| llms
+  api -. optional .-&gt; langsmith
+  worker -. optional .-&gt; langsmith</code></pre>
+<h3 id="runtime-services">Runtime Services</h3>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Service</th>
+<th>Responsibility</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>FastAPI web</td>
+<td>Serves frontend, accepts import/scrape requests, saves sessions, streams chat answers, exposes job status.</td>
+</tr>
+<tr class="even">
+<td>Redis</td>
+<td>RQ broker for <code>import</code> and <code>scrape</code> queues.</td>
+</tr>
+<tr class="odd">
+<td>RQ worker</td>
+<td>Processes uploaded files, URL scrapes, review insertions, and embeddings.</td>
+</tr>
+<tr class="even">
+<td>PostgreSQL + pgvector</td>
+<td>Primary store for sources, jobs, reviews, sessions, chat history, and vector chunks.</td>
+</tr>
+<tr class="odd">
+<td>S3-compatible storage</td>
+<td>Shared object storage for uploaded CSV/JSON files so Render web and worker services can both access them.</td>
+</tr>
+<tr class="even">
+<td>External LLM APIs</td>
+<td>OpenAI for embeddings and primary chat; Anthropic for fallback chat.</td>
+</tr>
+<tr class="odd">
+<td>LangSmith</td>
+<td>Optional tracing for embedding, retrieval, and chat paths.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="logical-architecture">2. Logical Architecture</h2>
+<pre class="mermaid"><code>flowchart LR
+  subgraph Frontend
+    ui[&quot;index.html&quot;]
+    js[&quot;frontend/js/app.js&quot;]
+    css[&quot;frontend/css/app.css&quot;]
+  end
+
+  subgraph API[&quot;FastAPI API Layer&quot;]
+    imports[&quot;/api/import/file&quot;]
+    ingest[&quot;/api/ingest/url&quot;]
+    jobs[&quot;/api/ingest/jobs/{id}&quot;]
+    reviews[&quot;/api/reviews&quot;]
+    sessions[&quot;/api/sessions&quot;]
+    chat[&quot;/api/chat&quot;]
+  end
+
+  subgraph Workers[&quot;Background Work&quot;]
+    queues[&quot;workers/queues.py&quot;]
+    tasks[&quot;workers/tasks.py&quot;]
+  end
+
+  subgraph Ingestion[&quot;Ingestion + Scraping&quot;]
+    fileproc[&quot;ingestion/file_processor.py&quot;]
+    router[&quot;scrapers/router.py&quot;]
+    parser[&quot;scrapers/parsers/generic.py\nreview_html.py&quot;]
+    providers[&quot;providers/http.py\nbrightdata.py\nzyte.py\napple_app_store.py\ngoogle_play.py&quot;]
+  end
+
+  subgraph RAG[&quot;RAG + LLM&quot;]
+    embed[&quot;llm/embeddings.py&quot;]
+    llmchat[&quot;llm/chat.py&quot;]
+    tracing[&quot;llm/tracing.py&quot;]
+  end
+
+  subgraph Storage
+    service[&quot;storage/service.py&quot;]
+    dbsession[&quot;storage/database.py&quot;]
+    s3[&quot;storage/s3.py&quot;]
+    models[&quot;storage/models.py&quot;]
+  end
+
+  ui --&gt; js
+  js --&gt; imports
+  js --&gt; ingest
+  js --&gt; jobs
+  js --&gt; reviews
+  js --&gt; sessions
+  js --&gt; chat
+  imports --&gt; queues
+  ingest --&gt; queues
+  queues --&gt; tasks
+  tasks --&gt; fileproc
+  tasks --&gt; router
+  router --&gt; providers
+  router --&gt; parser
+  tasks --&gt; embed
+  chat --&gt; embed
+  chat --&gt; llmchat
+  embed --&gt; service
+  llmchat --&gt; tracing
+  embed --&gt; tracing
+  service --&gt; dbsession
+  service --&gt; models
+  imports --&gt; s3
+  tasks --&gt; s3</code></pre>
+<hr />
+<h2 id="directory-structure">3. Directory Structure</h2>
+<p>The current codebase is a single FastAPI app plus static frontend.</p>
+<pre class="text"><code>reviewlens-ai/
+├── alembic/
+│   ├── env.py
+│   └── versions/
+│       ├── 20260427_0001_initial_schema.py
+│       ├── 20260427_0002_sessions.py
+│       └── 20260427_0003_review_chunks.py
+├── backend/
+│   ├── api/
+│   │   └── routes/
+│   │       ├── chat.py        # scoped RAG chat, SSE streaming, suggestions/topics
+│   │       ├── imports.py     # CSV/JSON upload, S3 handoff, import queue
+│   │       ├── ingest.py      # URL ingest, SSRF validation, scrape queue
+│   │       ├── jobs.py        # status polling and cancellation
+│   │       ├── reviews.py     # review browsing and filters
+│   │       └── sessions.py    # saved sessions and chat history
+│   ├── core/
+│   │   └── url_validation.py
+│   ├── ingestion/
+│   │   ├── dedupe.py
+│   │   ├── file_processor.py
+│   │   └── models.py
+│   ├── llm/
+│   │   ├── chat.py           # OpenAI primary, Anthropic fallback, plain-text cleanup
+│   │   ├── embeddings.py     # OpenAI embeddings + pgvector retrieval
+│   │   └── tracing.py        # optional LangSmith trace wrapper/redaction
+│   ├── scrapers/
+│   │   ├── models.py
+│   │   ├── router.py         # platform routing and provider fallback
+│   │   ├── parsers/
+│   │   │   ├── generic.py    # JSON-LD, microdata, embedded JSON, HTML cards
+│   │   │   └── review_html.py # TripAdvisor helper parser
+│   │   ├── providers/
+│   │   │   ├── apple_app_store.py # Apple public RSS reviews
+│   │   │   ├── google_play.py     # google-play-scraper adapter
+│   │   │   ├── brightdata.py
+│   │   │   ├── http.py
+│   │   │   └── zyte.py
+│   │   └── utils/
+│   │       ├── pagination.py
+│   │       └── platform_detection.py
+│   ├── storage/
+│   │   ├── database.py       # async SQLAlchemy engine/session
+│   │   ├── models.py         # ORM models for relational tables
+│   │   ├── s3.py             # shared uploaded-file storage
+│   │   └── service.py        # storage/query helpers and serializers
+│   ├── workers/
+│   │   ├── queues.py
+│   │   └── tasks.py          # import_file_task, scrape_url_task
+│   ├── config.py
+│   └── main.py
+├── frontend/
+│   ├── index.html
+│   ├── css/app.css
+│   └── js/app.js
+├── scripts/
+│   └── start-worker.sh
+├── tests/
+├── Dockerfile
+├── docker-compose.yml
+├── render.yaml
+├── pyproject.toml
+└── requirements.txt</code></pre>
+<hr />
+<h2 id="scraping-hierarchy">4. Scraping Hierarchy</h2>
+<p>Scraping is routed by platform first, then falls back to the configurable provider order.</p>
+<pre class="mermaid"><code>flowchart TD
+  start[&quot;scrape_url(url, page_count)&quot;]
+  apple{&quot;Apple App Store URL?\napps.apple.com/.../id123&quot;}
+  google{&quot;Google Play URL?\nplay.google.com/store/apps/details?id=...&quot;}
+  platform[&quot;Platform-specific public source&quot;]
+  generic[&quot;Generic URL scrape&quot;]
+  bd{&quot;BrightData first?&quot;}
+  bright[&quot;BrightData Web Unlocker&quot;]
+  providers[&quot;Provider fallback loop\nSCRAPER_PROVIDER_ORDER&quot;]
+  http[&quot;Direct HTTP&quot;]
+  zyte[&quot;Zyte Extraction API&quot;]
+  parse[&quot;Parse reviews&quot;]
+  ok{&quot;Any reviews?&quot;}
+  done[&quot;ScrapeResult&quot;]
+  fail[&quot;friendly failure to UI\nraw details in server logs&quot;]
+
+  start --&gt; apple
+  apple -- yes --&gt; platform
+  apple -- no --&gt; google
+  google -- yes --&gt; platform
+  google -- no --&gt; generic
+  platform --&gt; parse
+  generic --&gt; bd
+  bd -- yes --&gt; bright
+  bright --&gt; ok
+  ok -- yes --&gt; done
+  ok -- no --&gt; providers
+  bd -- no --&gt; providers
+  providers --&gt; http
+  providers --&gt; bright
+  providers --&gt; zyte
+  http --&gt; parse
+  bright --&gt; parse
+  zyte --&gt; parse
+  parse --&gt; ok
+  ok -- no providers left --&gt; fail</code></pre>
+<h3 id="provider-and-parser-order">Provider and Parser Order</h3>
+<ol type="1">
+<li><p><strong>Apple App Store</strong><br />
+<code>apps.apple.com</code> URLs are converted to Apple’s public RSS endpoint: <code>https://itunes.apple.com/{country}/rss/customerreviews/page={n}/id={app_id}/sortby=mostrecent/json</code>.</p></li>
+<li><p><strong>Google Play</strong><br />
+<code>play.google.com/store/apps/details?id=...</code> URLs use <code>google-play-scraper</code>, newest reviews first. One requested page maps to up to 100 reviews; <code>page_count</code> is capped.</p></li>
+<li><p><strong>BrightData optimized path</strong><br />
+If <code>SCRAPER_PROVIDER_ORDER</code> starts with <code>brightdata</code>, the router first tries the BrightData scraper path that can handle multi-page retrieval and parser-specific diagnostics.</p></li>
+<li><p><strong>Generic provider fallback</strong><br />
+The router loops through providers from <code>SCRAPER_PROVIDER_ORDER</code>, usually: <code>brightdata,zyte,http</code> in production or <code>http,brightdata,zyte</code> in local/dev.</p></li>
+<li><p><strong>Generic parser stack</strong><br />
+After HTML fetch, <code>parse_generic_reviews()</code> tries:</p>
+<ul>
+<li>TripAdvisor-specific helper for <code>tripadvisor.*</code></li>
+<li>JSON-LD/schema.org reviews</li>
+<li>microdata reviews</li>
+<li>embedded JSON state (<code>__NEXT_DATA__</code>, Apollo/Redux-like state)</li>
+<li>heuristic HTML review cards</li>
+</ul></li>
+</ol>
+<h3 id="platform-notes">Platform Notes</h3>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Platform</th>
+<th>Current implementation</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Apple App Store</td>
+<td>Public RSS JSON. No BrightData/Zyte needed.</td>
+</tr>
+<tr class="even">
+<td>Google Play</td>
+<td><code>google-play-scraper</code> package. No BrightData/Zyte needed.</td>
+</tr>
+<tr class="odd">
+<td>TripAdvisor</td>
+<td>Custom HTML parser through <code>review_html.py</code>, with provider fallback for fetching.</td>
+</tr>
+<tr class="even">
+<td>G2/Capterra/TrustRadius/Trustpilot/etc.</td>
+<td>Generic parser stack through BrightData/Zyte/direct HTTP depending on availability.</td>
+</tr>
+<tr class="odd">
+<td>Sites with hard blocking</td>
+<td>Return friendly UI error; provider-specific details remain in server logs and job attempts.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="llm-and-rag-design">5. LLM and RAG Design</h2>
+<h3 id="model-configuration">Model Configuration</h3>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Concern</th>
+<th>Current choice</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Primary chat model</td>
+<td><code>gpt-5.4</code> via <code>OPENAI_CHAT_MODEL</code></td>
+</tr>
+<tr class="even">
+<td>Chat fallbacks</td>
+<td><code>claude-haiku-4.7</code>, then <code>claude-sonnet-4.7</code> via <code>ANTHROPIC_FALLBACK_MODELS</code></td>
+</tr>
+<tr class="odd">
+<td>Embeddings</td>
+<td>OpenAI <code>text-embedding-3-small</code></td>
+</tr>
+<tr class="even">
+<td>Embedding dimensions</td>
+<td><code>1536</code> by default; changing this requires a migration and full re-embed</td>
+</tr>
+<tr class="odd">
+<td>Retrieval top-k</td>
+<td><code>RAG_TOP_K</code>, capped at 100</td>
+</tr>
+<tr class="even">
+<td>Streaming</td>
+<td>Server-sent events from <code>POST /api/chat</code></td>
+</tr>
+<tr class="odd">
+<td>Observability</td>
+<td>Optional LangSmith tracing</td>
+</tr>
+</tbody>
+</table>
+<p>The app currently uses direct <code>httpx</code> calls to OpenAI and Anthropic instead of LangChain. This keeps the request path explicit and avoids framework coupling while still supporting provider fallback and LangSmith traces.</p>
+<h3 id="rag-scope-rule">RAG Scope Rule</h3>
+<p>Chat must be scoped to the active review set:</p>
+<ul>
+<li>If a saved session is selected, source IDs come from <code>review_session_sources</code>.</li>
+<li>If no saved session is selected, source IDs come from the current workspace ingestions.</li>
+<li>Retrieval SQL always filters by <code>source_id IN (...)</code> before ordering by vector distance.</li>
+<li>The system prompt instructs the model to answer only from supplied review excerpts.</li>
+<li>The prompt includes the <strong>total review count</strong> for the active scope so “how many reviews” answers do not confuse chunks with reviews.</li>
+</ul>
+<h3 id="retrieval-flow">Retrieval Flow</h3>
+<pre class="mermaid"><code>flowchart LR
+  question[&quot;User question&quot;]
+  embedq[&quot;embed_texts([question])\nOpenAI embeddings&quot;]
+  sql[&quot;pgvector SQL\nWHERE source_id IN scope\nORDER BY embedding distance\nLIMIT RAG_TOP_K&quot;]
+  prompt[&quot;Prompt builder\nreview count + excerpts&quot;]
+  model[&quot;OpenAI gpt-5.4\nfallback: Claude Haiku -&gt; Sonnet&quot;]
+  clean[&quot;plain_text_response()\nremove Markdown&quot;]
+  stream[&quot;SSE stream to browser&quot;]
+  save[&quot;Persist chat messages\nfor saved sessions&quot;]
+
+  question --&gt; embedq --&gt; sql --&gt; prompt --&gt; model --&gt; clean --&gt; stream
+  clean --&gt; save</code></pre>
+<h3 id="chat-failure-behavior">Chat Failure Behavior</h3>
+<ul>
+<li>If no chunks are available for the current scope, the API returns a clear “no embedded review content” answer.</li>
+<li>If OpenAI fails before producing output, Anthropic fallback models are tried in configured order.</li>
+<li>If a streaming provider fails after partial output, the client receives an error event rather than silently switching mid-answer.</li>
+</ul>
+<hr />
+<h2 id="ingestion-flows">6. Ingestion Flows</h2>
+<h3 id="url-ingestion">URL Ingestion</h3>
+<pre class="mermaid"><code>sequenceDiagram
+  participant U as User
+  participant F as Frontend
+  participant A as FastAPI
+  participant R as Redis/RQ
+  participant W as Worker
+  participant P as Providers
+  participant L as OpenAI
+  participant DB as PostgreSQL/pgvector
+
+  U-&gt;&gt;F: Submit URL + page count
+  F-&gt;&gt;A: POST /api/ingest/url
+  A-&gt;&gt;A: validate_public_http_url()
+  A-&gt;&gt;DB: create review_source + ingest_job
+  A-&gt;&gt;R: enqueue scrape_url_task(job_id, source_id, url, page_count)
+  A--&gt;&gt;F: job + source
+  F-&gt;&gt;A: poll GET /api/ingest/jobs/{job_id}
+  R-&gt;&gt;W: deliver job
+  W-&gt;&gt;DB: mark running + progress stats
+  W-&gt;&gt;P: scrape_url()
+  P--&gt;&gt;W: normalized ReviewDocument[]
+  W-&gt;&gt;DB: insert_reviews()
+  W-&gt;&gt;L: embed inserted reviews
+  W-&gt;&gt;DB: insert review_chunks + mark done
+  A--&gt;&gt;F: done status</code></pre>
+<h3 id="file-import">File Import</h3>
+<pre class="mermaid"><code>sequenceDiagram
+  participant U as User
+  participant F as Frontend
+  participant A as FastAPI
+  participant S3 as S3
+  participant R as Redis/RQ
+  participant W as Worker
+  participant L as OpenAI
+  participant DB as PostgreSQL/pgvector
+
+  U-&gt;&gt;F: Select CSV/JSON/JSONL
+  F-&gt;&gt;A: POST /api/import/file
+  A-&gt;&gt;A: validate extension + max size
+  A-&gt;&gt;S3: upload original file
+  A-&gt;&gt;DB: create review_source + ingest_job
+  A-&gt;&gt;R: enqueue import_file_task(job_id, source_id, s3://...)
+  A--&gt;&gt;F: job + source
+  R-&gt;&gt;W: deliver import job
+  W-&gt;&gt;S3: download file to temp path
+  W-&gt;&gt;W: parse_review_file()
+  W-&gt;&gt;DB: insert_reviews()
+  W-&gt;&gt;L: embed inserted reviews
+  W-&gt;&gt;DB: insert review_chunks + mark done</code></pre>
+<h3 id="job-cancellation">Job Cancellation</h3>
+<p>The frontend can call <code>POST /api/ingest/jobs/{job_id}/cancel</code>. Workers check cancellation before progress updates, before embedding, and before marking final success. Completed, failed, and cancelled jobs are terminal.</p>
+<hr />
+<h2 id="storage-design">7. Storage Design</h2>
+<h3 id="relational-tables">Relational Tables</h3>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Table</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>review_sources</code></td>
+<td>One row per uploaded file or scraped URL. Stores platform, URL, embedding model, and config such as S3 file info.</td>
+</tr>
+<tr class="even">
+<td><code>ingest_jobs</code></td>
+<td>Tracks background job state, errors, stats, current page/provider, cancellation, and attempts.</td>
+</tr>
+<tr class="odd">
+<td><code>reviews</code></td>
+<td>Normalized review records with dedupe fingerprint per source.</td>
+</tr>
+<tr class="even">
+<td><code>review_sessions</code></td>
+<td>Saved analysis sessions.</td>
+</tr>
+<tr class="odd">
+<td><code>review_session_sources</code></td>
+<td>Many-to-many link between sessions and sources.</td>
+</tr>
+<tr class="even">
+<td><code>chat_messages</code></td>
+<td>Persisted chat history for saved sessions.</td>
+</tr>
+<tr class="odd">
+<td><code>review_chunks</code></td>
+<td>Raw SQL-managed pgvector table created by Alembic; contains review chunks and embeddings.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="pgvector">pgvector</h3>
+<p><code>review_chunks.embedding</code> is <code>vector(1536)</code> by default. The HNSW index uses cosine distance:</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true"></a><span class="kw">CREATE</span> <span class="kw">INDEX</span> review_chunks_embedding_idx</span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true"></a><span class="kw">ON</span> review_chunks <span class="kw">USING</span> hnsw (embedding vector_cosine_ops)</span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true"></a><span class="kw">WITH</span> (m <span class="op">=</span> <span class="dv">16</span>, ef_construction <span class="op">=</span> <span class="dv">64</span>);</span></code></pre></div>
+<p>The query path embeds the question, filters chunks by source IDs, and orders by vector distance:</p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true"></a><span class="kw">SELECT</span> review_id, source_id, content, metadata,</span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true"></a>       <span class="dv">1</span> <span class="op">-</span> (embedding <span class="op">&lt;=&gt;</span> <span class="fu">CAST</span>(<span class="ch">:embedding</span> <span class="kw">AS</span> vector)) <span class="kw">AS</span> score</span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true"></a><span class="kw">FROM</span> review_chunks</span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true"></a><span class="kw">WHERE</span> source_id <span class="kw">IN</span> <span class="ch">:source_ids</span></span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true"></a><span class="kw">ORDER</span> <span class="kw">BY</span> embedding <span class="op">&lt;=&gt;</span> <span class="fu">CAST</span>(<span class="ch">:embedding</span> <span class="kw">AS</span> vector)</span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true"></a><span class="kw">LIMIT</span> <span class="ch">:limit</span>;</span></code></pre></div>
+<hr />
+<h2 id="observability">8. Observability</h2>
+<h3 id="langsmith">LangSmith</h3>
+<p>LangSmith is optional and disabled by default:</p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true"></a><span class="va">LANGSMITH_TRACING=</span>false</span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true"></a><span class="va">LANGSMITH_API_KEY=</span></span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true"></a><span class="va">LANGSMITH_PROJECT=</span>reviewlens-ai</span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true"></a><span class="va">LANGSMITH_ENDPOINT=</span>https://api.smith.langchain.com</span>
+<span id="cb10-5"><a href="#cb10-5" aria-hidden="true"></a><span class="va">LANGSMITH_WORKSPACE_ID=</span></span></code></pre></div>
+<p>When enabled, the app traces:</p>
+<ul>
+<li><code>embed_source_reviews</code></li>
+<li><code>embed_texts</code></li>
+<li><code>retrieve_relevant_chunks</code></li>
+<li>OpenAI chat calls and streams</li>
+<li>Anthropic chat calls and streams</li>
+<li>model fallback chain</li>
+</ul>
+<p>The tracing wrapper redacts API keys from settings objects and summarizes embedding vectors instead of sending the full numeric arrays.</p>
+<h3 id="server-logs">Server Logs</h3>
+<p>Raw scraper provider errors are logged server-side. The UI receives friendly messages for blocked or unparsable review sites.</p>
+<hr />
+<h2 id="deployment">9. Deployment</h2>
+<h3 id="render">Render</h3>
+<p><code>render.yaml</code> defines:</p>
+<ul>
+<li><code>reviewlens-ai-web</code>: Docker web service serving the frontend and API.</li>
+<li><code>reviewlens-ai-worker</code>: Docker worker running <code>scripts/start-worker.sh</code>, listening on <code>import</code> and <code>scrape</code>.</li>
+<li>Required env vars for Postgres, Redis, S3, OpenAI, Anthropic, BrightData, Zyte, and optional LangSmith.</li>
+</ul>
+<p>The Docker image runs:</p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true"></a><span class="ex">alembic</span> upgrade head <span class="kw">&amp;&amp;</span> <span class="ex">uvicorn</span> backend.main:app --host 0.0.0.0 --port <span class="va">${PORT:-</span>8082<span class="va">}</span></span></code></pre></div>
+<p>The worker runs:</p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true"></a><span class="ex">rq</span> worker --url <span class="st">&quot;</span><span class="va">$REDIS_URL</span><span class="st">&quot;</span> import scrape</span></code></pre></div>
+<h3 id="local-docker">Local Docker</h3>
+<p><code>docker-compose.yml</code> runs the web app, worker, and Redis locally. Database may be local, external, or managed depending on <code>DATABASE_URL</code>. <code>RUNNING_IN_DOCKER=1</code> prevents accidentally pointing a container at <code>localhost</code> for Postgres.</p>
+<hr />
+<h2 id="security-and-safety-boundaries">10. Security and Safety Boundaries</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Risk</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>SSRF from URL ingestion</td>
+<td><code>validate_public_http_url()</code> blocks non-public/private targets.</td>
+</tr>
+<tr class="even">
+<td>Scraper abuse</td>
+<td>Jobs go through Redis/RQ; provider order is explicit; failures are friendly to users and detailed in logs.</td>
+</tr>
+<tr class="odd">
+<td>Prompt injection from reviews</td>
+<td>System prompt restricts answers to excerpts only; retrieval is source-scoped in SQL.</td>
+</tr>
+<tr class="even">
+<td>Wrong-session data leakage</td>
+<td>Chat uses saved session source IDs or current workspace source IDs only.</td>
+</tr>
+<tr class="odd">
+<td>File upload accessibility across Render services</td>
+<td>Uploaded files are placed in S3-compatible storage before enqueueing import jobs.</td>
+</tr>
+<tr class="even">
+<td>Secrets in traces</td>
+<td>LangSmith wrapper redacts settings and embedding vectors.</td>
+</tr>
+<tr class="odd">
+<td>JSON serialization failures from scraper payloads</td>
+<td>Provider adapters must convert raw payloads to JSON-safe data before storage.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="current-implementation-status">11. Current Implementation Status</h2>
+<p>Implemented:</p>
+<ul>
+<li>CSV/JSON/JSONL/NDJSON file import through S3 + RQ.</li>
+<li>URL ingestion through RQ.</li>
+<li>BrightData, Zyte, and direct HTTP fallback.</li>
+<li>Apple App Store RSS reviews.</li>
+<li>Google Play reviews through <code>google-play-scraper</code>.</li>
+<li>TripAdvisor-specific parser.</li>
+<li>PostgreSQL + pgvector review chunks.</li>
+<li>RAG chat with streaming SSE.</li>
+<li>OpenAI primary chat model <code>gpt-5.4</code>.</li>
+<li>Anthropic fallback models <code>claude-haiku-4.7</code>, <code>claude-sonnet-4.7</code>.</li>
+<li>Saved sessions and persisted chat history.</li>
+<li>Review search/filter UI.</li>
+<li>Job cancellation.</li>
+<li>Optional LangSmith tracing.</li>
+</ul>
+<p>Still open / future:</p>
+<ul>
+<li>Better platform-specific parsers for heavily blocked SaaS review sites.</li>
+<li>Object-storage cleanup lifecycle for uploaded files.</li>
+<li>More robust eval set for RAG answer quality.</li>
+<li>Optional hybrid search if vector-only retrieval becomes noisy.</li>
+<li>Authentication/multi-tenancy if this moves beyond demo/internal use.</li>
+</ul>

@@ -15,21 +15,43 @@
         </p>
       </header>
 
-      <section class="rounded-3xl border border-white/10 bg-white/10 p-4 shadow-2xl backdrop-blur">
-        <div id="ingestion-controls" class="grid gap-3 xl:grid-cols-[1.6fr_0.55fr_1fr_auto_auto_auto] xl:items-end">
+      <section class="relative z-50 rounded-3xl border border-white/10 bg-white/10 p-4 shadow-2xl backdrop-blur overflow-visible">
+        <div
+          id="ingestion-controls"
+          class="relative z-50 grid gap-3 xl:grid-cols-[1.6fr_0.55fr_1fr_auto_auto_auto] xl:items-end overflow-visible"
+        >
           <label>
             <span class="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-slate-300">
-              URL
+              Review Site URL
               <details class="info-popover">
                 <summary aria-label="URL tips">i</summary>
                 <div class="info-popover-panel">
-                  <p>Start with deterministic CSV, JSON, or JSONL imports, or try:</p>
-                  <p class="mt-2 font-mono text-xs text-sky-200">
-                    https://www.capterra.com/p/135003/Slack/reviews
-                  </p>
-                  <p class="mt-1 font-mono text-xs text-sky-200">
-                    https://www.trustradius.com/products/monday/reviews
-                  </p>
+                  <p class="text-xs font-semibold uppercase tracking-wide text-slate-300">Working domains</p>
+                  <ul class="mt-2 grid gap-1 text-xs text-slate-200">
+                    <li>https://www.g2.com</li>
+                    <li>https://www.capterra.com</li>
+                    <li>https://www.trustradius.com</li>
+                    <li>https://www.trustpilot.com</li>
+                    <li>https://www.producthunt.com</li>
+                    <li>https://www.glassdoor.com</li>
+                    <li>https://play.google.com</li>
+                    <li>https://apps.apple.com</li>
+                    <li>https://apps.shopify.com</li>
+                    <li>https://www.tripadvisor.com</li>
+                  </ul>
+                  <p class="mt-4 text-xs font-semibold uppercase tracking-wide text-slate-300">Sample URLs</p>
+                  <ul class="mt-2 grid gap-1 text-xs text-sky-200">
+                    <li>https://www.g2.com/products/slack/reviews</li>
+                    <li>https://www.capterra.com/p/135003/Slack/reviews</li>
+                    <li>https://www.trustradius.com/products/slack/reviews</li>
+                    <li>https://www.trustpilot.com/review/slack.com</li>
+                    <li>https://www.producthunt.com/products/slack/reviews</li>
+                    <li>https://www.glassdoor.com/Reviews/Slack-Reviews-E950758.htm</li>
+                    <li>https://play.google.com/store/apps/details?id=com.Slack</li>
+                    <li>https://apps.apple.com/us/app/slack-for-desktop/id803453959</li>
+                    <li>https://apps.shopify.com/klaviyo-email-marketing/reviews</li>
+                    <li>https://www.tripadvisor.com/Hotel_Review-g60763-d93562-Reviews-The_New_Yorker_A_Wyndham_Hotel-New_York_City_New_York.html</li>
+                  </ul>
                 </div>
               </details>
             </span>
@@ -37,7 +59,7 @@
               id="scrape-url"
               type="url"
               class="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/70 px-3 py-2 text-sm outline-none focus:border-sky-300"
-              placeholder="https://example.com/reviews"
+              placeholder="Enter a review site URL"
             />
           </label>
 
@@ -81,10 +103,12 @@
             <details class="info-popover">
               <summary aria-label="Expected fields">i</summary>
               <div class="info-popover-panel">
-                <p class="font-semibold text-slate-100">Expected fields</p>
-                <code class="mt-2 block whitespace-pre-wrap text-xs text-sky-200"
-                  >author, rating, body, reviewed_at, title?, source_url?, metadata?</code
-                >
+                <p class="text-xs font-semibold uppercase tracking-wide text-slate-300">Valid file format</p>
+                <p class="mt-2 text-xs text-slate-200">
+                  Required: author, rating (0–5), body, reviewed_at (ISO date/time).
+                </p>
+                <p class="mt-1 text-xs text-slate-200">Optional: title, source_url, metadata.</p>
+                <p class="mt-1 text-xs text-slate-400">CSV needs headers. JSON can be array.</p>
               </div>
             </details>
           </div>
@@ -212,16 +236,11 @@
 
       <section class="grid gap-4 lg:grid-cols-[0.85fr_1.15fr]">
         <section class="flex h-[500px] flex-col rounded-3xl border border-white/10 bg-white/10 p-5 shadow-2xl backdrop-blur">
-          <div class="flex items-center justify-between gap-3">
-            <div>
-              <h2 class="text-lg font-semibold">Ingested Reviews</h2>
-              <p id="review-summary" class="mt-1 text-sm text-slate-400">
-                Preview the normalized reviews currently loaded. Total = 0
-              </p>
-            </div>
-            <button id="refresh" class="rounded-xl bg-sky-300 px-4 py-2 text-sm font-bold text-slate-950 hover:bg-sky-200">
-              Refresh
-            </button>
+          <div>
+            <h2 class="text-lg font-semibold">Ingested Reviews</h2>
+            <p id="review-summary" class="mt-1 text-sm text-slate-400">
+              Preview the normalized reviews currently loaded. Total = 0
+            </p>
           </div>
           <div id="review-list" class="mt-4 grid flex-1 content-start gap-3 overflow-y-auto pr-1 text-sm"></div>
         </section>

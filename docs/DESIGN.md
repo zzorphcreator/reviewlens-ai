@@ -1,805 +1,528 @@
-# ReviewLens AI — System Design Document
+﻿# ReviewLens AI — System Design
 
-**Version:** 1.0  
-**Date:** 2026-04-27  
-**Status:** Draft
+**Status:** Active design  
+**Last updated:** 2026-04-28
 
----
-
-## 1. Executive Summary
-
-ReviewLens AI is a web-based platform that aggregates product/service reviews from public review sites and local files, stores them in PostgreSQL with the pgvector extension, and exposes a RAG-powered chat interface for querying the ingested reviews. The system uses LangChain to orchestrate multi-provider LLM calls (OpenAI primary, Anthropic fallback), background task queues for non-blocking ingestion, and a layered scraping strategy to handle sites that restrict automated access. All persistent state — relational data, embeddings, and uploaded files — lives in a single PostgreSQL instance, keeping the infrastructure footprint minimal.
+ReviewLens AI ingests product and app reviews from URLs or CSV/JSON uploads, stores normalized reviews in PostgreSQL, embeds review text into pgvector, and exposes a review-scoped RAG chat interface. The current implementation is intentionally backend-first, with a static HTML/vanilla JS frontend served by FastAPI.
 
 ---
 
-## 2. High-Level Architecture
+## 1. Current Architecture
 
+```mermaid
+flowchart TB
+  browser["Browser\nStatic HTML + Tailwind CDN + vanilla JS"]
+  api["FastAPI web service\nStatic frontend + REST APIs + SSE chat stream"]
+  redis["Redis\nRQ broker"]
+  worker["RQ worker\nqueues: import, scrape"]
+  s3["S3-compatible object storage\nuploaded CSV/JSON files"]
+  db["PostgreSQL + pgvector\nreviews, sessions, jobs, chunks"]
+  providers["External review sources\nApple RSS, Google Play, BrightData, Zyte, direct HTTP"]
+  llms["LLM providers\nOpenAI primary\nAnthropic fallback"]
+  langsmith["LangSmith\noptional tracing"]
+
+  browser -->|"REST: import/url/session/reviews/jobs"| api
+  browser -->|"SSE over fetch: /api/chat"| api
+  api -->|"enqueue jobs"| redis
+  redis --> worker
+  api -->|"upload file before enqueue"| s3
+  worker -->|"download uploaded file"| s3
+  worker -->|"fetch review pages / feeds"| providers
+  worker -->|"insert reviews + embeddings"| db
+  api -->|"read reviews, sessions, chunks"| db
+  api -->|"embed question + chat completion"| llms
+  worker -->|"embed ingested reviews"| llms
+  api -. optional .-> langsmith
+  worker -. optional .-> langsmith
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                          CLIENT BROWSER                             │
-│   ┌──────────────────────────────────────────────────────────────┐  │
-│   │  Plain HTML + Vanilla JS (Tailwind CDN)                      │  │
-│   │  ┌─────────────────┐  ┌─────────────┐  ┌─────────────────┐  │  │
-│   │  │  Review Ingestion│  │  Chat UI    │  │  Dashboard /    │  │  │
-│   │  │  (URL + File)    │  │  (WebSocket)│  │  Review Browser │  │  │
-│   │  └────────┬────────┘  └──────┬──────┘  └────────┬────────┘  │  │
-│   └───────────┼──────────────────┼───────────────────┼───────────┘  │
-└───────────────┼──────────────────┼───────────────────┼─────────────┘
-                │ REST             │ WebSocket          │ REST
-                ▼                  ▼                    ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│               API GATEWAY (Render — managed, no config)             │
-│              Rate Limiting · TLS Termination · CORS                 │
-└───────────────────────────────┬─────────────────────────────────────┘
-                                │
-                                ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                     FastAPI Application Server                      │
-│                                                                     │
-│  ┌──────────────┐  ┌──────────────┐  ┌───────────────────────────┐ │
-│  │  /api/ingest │  │  /api/chat   │  │  /api/reviews             │ │
-│  │  (URL/File)  │  │  (WS stream) │  │  (CRUD + search)          │ │
-│  └──────┬───────┘  └──────┬───────┘  └───────────────────────────┘ │
-└─────────┼─────────────────┼───────────────────────────────────────┘
-          │                 │
-          ▼                 ▼
-┌──────────────────┐  ┌─────────────────────────────────────────────┐
-│  TASK QUEUE      │  │  LLM / RAG LAYER                            │
-│  Redis + RQ      │  │                                             │
-│                  │  │  LangChain LCEL Pipeline                    │
-│  ┌────────────┐  │  │  ┌────────────────────────────────────────┐ │
-│  │ Scrape Job │  │  │  │  Retriever → Prompt → LLM → Response  │ │
-│  │ File Job   │  │  │  └─────────────────────────────────────── ┘ │
-│  │ Embed Job  │  │  │                                             │
-│  └─────┬──────┘  │  │  Primary: OpenAI gpt-4o                     │
-└────────┼─────────┘  │  Fallback: Anthropic claude-sonnet-4-6       │
-         │            │  Tracing:  Langfuse                          │
-         ▼            └─────────────────────────────────────────────┘
-┌─────────────────────────────────────────────────────────────────────┐
-│                     INGESTION LAYER                                 │
-│                                                                     │
-│  ┌──────────────────────────────────────────────────────────────┐   │
-│  │  Scraper Router                                              │   │
-│  │                                                              │   │
-│  │  Tier 1: Direct HTTP + BeautifulSoup  (free, fast)          │   │
-│  │  Tier 2: Playwright / Scrapy          (JS-heavy sites)      │   │
-│  │  Tier 3: BrightData / Zyte / Firecrawl (blocked sites)      │   │
-│  │                                                              │   │
-│  │  Site Adapters:                                              │   │
-│  │  ┌──────────┐ ┌────────────┐ ┌──────┐ ┌──────────────────┐ │   │
-│  │  │ Amazon   │ │ Google Maps│ │  G2  │ │ Capterra/Yelp/.. │ │   │
-│  │  └──────────┘ └────────────┘ └──────┘ └──────────────────┘ │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-│                                                                     │
-│  ┌──────────────────────────────────────────────────────────────┐   │
-│  │  File Processor (CSV / JSON)                                 │   │
-│  │  Schema validation → normalise → chunk → embed              │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-└──────────────────────────────┬──────────────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                         STORAGE LAYER                               │
-│                                                                     │
-│  ┌──────────────────────────────────────────────────────────────┐   │
-│  │  PostgreSQL 16 + pgvector extension                          │   │
-│  │                                                              │   │
-│  │  review_sources   — source metadata & config                │   │
-│  │  ingest_jobs      — job status tracking                     │   │
-│  │  reviews          — raw review records                      │   │
-│  │  review_chunks    — text chunks + vector(1536) embeddings   │   │
-│  │  chat_sessions    — session metadata                        │   │
-│  │  chat_messages    — conversation history                    │   │
-│  │                                                              │   │
-│  │  HNSW index on review_chunks(embedding vector_cosine_ops)   │   │
-│  │  GIN  index on review_chunks for full-text hybrid search    │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────┘
-```
+
+### Runtime Services
+
+| Service | Responsibility |
+|---|---|
+| FastAPI web | Serves frontend, accepts import/scrape requests, saves sessions, streams chat answers, exposes job status. |
+| Redis | RQ broker for `import` and `scrape` queues. |
+| RQ worker | Processes uploaded files, URL scrapes, review insertions, and embeddings. |
+| PostgreSQL + pgvector | Primary store for sources, jobs, reviews, sessions, chat history, and vector chunks. |
+| S3-compatible storage | Shared object storage for uploaded CSV/JSON files so Render web and worker services can both access them. |
+| External LLM APIs | OpenAI for embeddings and primary chat; Anthropic for fallback chat. |
+| LangSmith | Optional tracing for embedding, retrieval, and chat paths. |
 
 ---
 
-## 3. Component Detail
+## 2. Logical Architecture
 
-### 3.1 Frontend
+```mermaid
+flowchart LR
+  subgraph Frontend
+    ui["index.html"]
+    js["frontend/js/app.js"]
+    css["frontend/css/app.css"]
+  end
 
-Plain HTML + vanilla JS, served as static files directly by FastAPI via `StaticFiles`. No build step, no npm, no separate Render service.
+  subgraph API["FastAPI API Layer"]
+    imports["/api/import/file"]
+    ingest["/api/ingest/url"]
+    jobs["/api/ingest/jobs/{id}"]
+    reviews["/api/reviews"]
+    sessions["/api/sessions"]
+    chat["/api/chat"]
+  end
 
-| Concern | Choice | Rationale |
-|---|---|---|
-| Markup | Plain HTML | No build pipeline |
-| Styling | Tailwind CSS (CDN) | Utility classes without a build step |
-| Scripting | Vanilla JS (ES modules) | No framework overhead |
-| Chat streaming | Native `WebSocket` API | Built into every browser |
-| File upload | Native `<input type="file">` | No library needed |
-| Chat history | `sessionStorage` | Per-session, no server state |
-| Served by | FastAPI `StaticFiles` mount | Single service, no separate frontend deploy |
+  subgraph Workers["Background Work"]
+    queues["workers/queues.py"]
+    tasks["workers/tasks.py"]
+  end
 
-```python
-# main.py
-from fastapi.staticfiles import StaticFiles
-app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
-```
+  subgraph Ingestion["Ingestion + Scraping"]
+    fileproc["ingestion/file_processor.py"]
+    router["scrapers/router.py"]
+    parser["scrapers/parsers/generic.py\nreview_html.py"]
+    providers["providers/http.py\nbrightdata.py\nzyte.py\napple_app_store.py\ngoogle_play.py"]
+  end
 
-**Pages (`frontend/`):**
+  subgraph RAG["RAG + LLM"]
+    embed["llm/embeddings.py"]
+    llmchat["llm/chat.py"]
+    tracing["llm/tracing.py"]
+  end
 
-```
-frontend/
-├── index.html      # dashboard: source list, ingest status
-├── ingest.html     # add source (URL input or file upload)
-├── chat.html       # chat interface with model selector
-├── reviews.html    # browse / filter ingested reviews
-├── css/
-│   └── app.css     # minimal custom styles on top of Tailwind CDN
-└── js/
-    ├── api.js      # fetch/WebSocket wrappers
-    ├── chat.js     # streaming chat logic
-    ├── ingest.js   # ingest form + job polling
-    └── reviews.js  # review browser
+  subgraph Storage
+    service["storage/service.py"]
+    dbsession["storage/database.py"]
+    s3["storage/s3.py"]
+    models["storage/models.py"]
+  end
+
+  ui --> js
+  js --> imports
+  js --> ingest
+  js --> jobs
+  js --> reviews
+  js --> sessions
+  js --> chat
+  imports --> queues
+  ingest --> queues
+  queues --> tasks
+  tasks --> fileproc
+  tasks --> router
+  router --> providers
+  router --> parser
+  tasks --> embed
+  chat --> embed
+  chat --> llmchat
+  embed --> service
+  llmchat --> tracing
+  embed --> tracing
+  service --> dbsession
+  service --> models
+  imports --> s3
+  tasks --> s3
 ```
 
 ---
 
-### 3.2 FastAPI Application Server
+## 3. Directory Structure
 
-```
-backend/
-├── main.py
-├── api/
-│   ├── routes/
-│   │   ├── ingest.py       # POST /ingest/url, POST /ingest/file
-│   │   ├── chat.py         # WS  /chat/{session_id}
-│   │   ├── reviews.py      # GET /reviews, GET /reviews/{id}
-│   │   └── sources.py      # CRUD for review sources
-│   └── middleware/
-│       ├── rate_limit.py   # slowapi (token bucket per IP)
-│       └── security.py     # CSP, CORS, input sanitisation
-├── ingestion/
-│   ├── router.py           # picks scraping tier
-├── scrapers
-│   ├── models.py
-│   ├── parsers
-│   │   ├── g2.py
-│   │   ├── review_html.py
-│   │   └── tripadvisor.py
-|	|	└── <more parsers>.py
-│   ├── providers
-│   │   ├── apple.py
-│   │   ├── google_maps.py
-│   │   ├── brightdata.py
-│   │   ├── local_scrappy.py
-│   │   ├── zyte.py
-│   ├── tools
-│   │   └── review_site_scraper_tool.py
-│   └── utils
-│       ├── pagination.py
-│       └── <other>.py
-│   └── file_processor.py   # CSV/JSON normaliser
-├── llm/
-│   ├── chain.py            # LangChain LCEL RAG chain
-│   ├── models.py           # OpenAI + Anthropic with fallback
-│   └── embeddings.py       # OpenAI text-embedding-3-small
-├── storage/
-│   ├── vector_store.py     # PGVector (langchain_postgres) wrapper
-│   └── database.py         # SQLAlchemy async + Alembic
-├── workers/
-│   ├── queues.py           # Queue definitions (scrape, embed, file)
-│   └── tasks.py            # RQ job functions: scrape_url_task, process_file_task, embed_task
-└── config.py               # pydantic-settings
-```
+The current codebase is a single FastAPI app plus static frontend.
 
-**Ingest flow (async, non-blocking):**
-
-```
-POST /ingest/url  ──► validate URL
-                      ──► create ingest_job record (status=PENDING)
-                      ──► enqueue RQ job (scrape_url_task)
-                      ──► return { job_id }
-                                    │
-                                    ▼ (background)
-                          scrape_url_task
-                          ──► ScraperRouter.scrape()
-                          ──► normalise → ReviewDocument[]
-                          ──► chunk text (RecursiveCharacterTextSplitter)
-                          ──► embed_task (OpenAI embeddings)
-                          ──► INSERT INTO review_chunks (pgvector)
-                          ──► update ingest_job (status=DONE)
-
-GET /ingest/jobs/{job_id}  ──► poll status (SSE or polling)
+```text
+reviewlens-ai/
+├── alembic/
+│   ├── env.py
+│   └── versions/
+│       ├── 20260427_0001_initial_schema.py
+│       ├── 20260427_0002_sessions.py
+│       └── 20260427_0003_review_chunks.py
+├── backend/
+│   ├── api/
+│   │   └── routes/
+│   │       ├── chat.py        # scoped RAG chat, SSE streaming, suggestions/topics
+│   │       ├── imports.py     # CSV/JSON upload, S3 handoff, import queue
+│   │       ├── ingest.py      # URL ingest, SSRF validation, scrape queue
+│   │       ├── jobs.py        # status polling and cancellation
+│   │       ├── reviews.py     # review browsing and filters
+│   │       └── sessions.py    # saved sessions and chat history
+│   ├── core/
+│   │   └── url_validation.py
+│   ├── ingestion/
+│   │   ├── dedupe.py
+│   │   ├── file_processor.py
+│   │   └── models.py
+│   ├── llm/
+│   │   ├── chat.py           # OpenAI primary, Anthropic fallback, plain-text cleanup
+│   │   ├── embeddings.py     # OpenAI embeddings + pgvector retrieval
+│   │   └── tracing.py        # optional LangSmith trace wrapper/redaction
+│   ├── scrapers/
+│   │   ├── models.py
+│   │   ├── router.py         # platform routing and provider fallback
+│   │   ├── parsers/
+│   │   │   ├── generic.py    # JSON-LD, microdata, embedded JSON, HTML cards
+│   │   │   └── review_html.py # TripAdvisor helper parser
+│   │   ├── providers/
+│   │   │   ├── apple_app_store.py # Apple public RSS reviews
+│   │   │   ├── google_play.py     # google-play-scraper adapter
+│   │   │   ├── brightdata.py
+│   │   │   ├── http.py
+│   │   │   └── zyte.py
+│   │   └── utils/
+│   │       ├── pagination.py
+│   │       └── platform_detection.py
+│   ├── storage/
+│   │   ├── database.py       # async SQLAlchemy engine/session
+│   │   ├── models.py         # ORM models for relational tables
+│   │   ├── s3.py             # shared uploaded-file storage
+│   │   └── service.py        # storage/query helpers and serializers
+│   ├── workers/
+│   │   ├── queues.py
+│   │   └── tasks.py          # import_file_task, scrape_url_task
+│   ├── config.py
+│   └── main.py
+├── frontend/
+│   ├── index.html
+│   ├── css/app.css
+│   └── js/app.js
+├── scripts/
+│   └── start-worker.sh
+├── tests/
+├── Dockerfile
+├── docker-compose.yml
+├── render.yaml
+├── pyproject.toml
+└── requirements.txt
 ```
 
 ---
 
-### 3.3 Scraping Layer — Tiered Strategy
+## 4. Scraping Hierarchy
 
-Review sites range from fully open to heavily bot-protected. A tiered approach minimises cost:
+Scraping is routed by platform first, then falls back to the configurable provider order.
 
+```mermaid
+flowchart TD
+  start["scrape_url(url, page_count)"]
+  apple{"Apple App Store URL?\napps.apple.com/.../id123"}
+  google{"Google Play URL?\nplay.google.com/store/apps/details?id=..."}
+  platform["Platform-specific public source"]
+  generic["Generic URL scrape"]
+  bd{"BrightData first?"}
+  bright["BrightData Web Unlocker"]
+  providers["Provider fallback loop\nSCRAPER_PROVIDER_ORDER"]
+  http["Direct HTTP"]
+  zyte["Zyte Extraction API"]
+  parse["Parse reviews"]
+  ok{"Any reviews?"}
+  done["ScrapeResult"]
+  fail["friendly failure to UI\nraw details in server logs"]
+
+  start --> apple
+  apple -- yes --> platform
+  apple -- no --> google
+  google -- yes --> platform
+  google -- no --> generic
+  platform --> parse
+  generic --> bd
+  bd -- yes --> bright
+  bright --> ok
+  ok -- yes --> done
+  ok -- no --> providers
+  bd -- no --> providers
+  providers --> http
+  providers --> bright
+  providers --> zyte
+  http --> parse
+  bright --> parse
+  zyte --> parse
+  parse --> ok
+  ok -- no providers left --> fail
 ```
-ScraperRouter.scrape(url, platform)
-│
-├── Tier 1 — Direct HTTP (httpx async + BeautifulSoup)
-│   Cost: $0    Speed: fast    Coverage: ~30% of targets
-│   Used for: G2, Capterra (partial), Yelp (with user-agent rotation)
-│
-├── Tier 2 — Headless Browser (Playwright, async)
-│   Cost: CPU   Speed: slow    Coverage: +40%
-│   Used for: Google Maps, JS-rendered review widgets
-│   Pool: 4 browser workers via playwright-pool
-│
-└── Tier 3 — Managed Proxy APIs
-    Cost: $$    Speed: medium  Coverage: +30% (Amazon, heavily protected)
-    Providers (tried in order until success):
-    ├── BrightData — SERP API / Web Unlocker (primary)
-    ├── Zyte       — Automatic Extraction API (secondary fallback)
-    └── Firecrawl  — to be evaluated based on BrightData results
 
-    Fallback order can be configured per-platform in config.
-```
+### Provider and Parser Order
 
-**Site-specific notes:**
+1. **Apple App Store**  
+   `apps.apple.com` URLs are converted to Apple’s public RSS endpoint:
+   `https://itunes.apple.com/{country}/rss/customerreviews/page={n}/id={app_id}/sortby=mostrecent/json`.
 
-| Platform | Preferred Tier | Notes |
-|---|---|---|
-| Amazon | — | Deferred to later phase |
-| Google Maps | Places API | Official API; requires Google Cloud billing |
-| G2 | Tier 1 → Tier 3 | Rate-limited but often accessible |
-| Capterra | Tier 1 → Tier 2 | Requires JavaScript for full load |
-| Yelp | Tier 1 (Fusion API) | Free API tier available, prefer it |
-| TripAdvisor | Tier 2 → Tier 3 | No public API |
+2. **Google Play**  
+   `play.google.com/store/apps/details?id=...` URLs use `google-play-scraper`, newest reviews first. One requested page maps to up to 100 reviews; `page_count` is capped.
 
-**Note on Scrapy + asyncio:** Scrapy is Twisted-based and does not integrate cleanly with FastAPI's asyncio event loop or RQ workers. For paginated crawls the recommended approach is a Playwright-based pagination loop inside an RQ job (each page fetched with `async_playwright` via `asyncio.run()`). Scrapy can be used as a separate crawl process invoked via `subprocess.run` if you have strong reasons to prefer it, but it should not be imported directly into the FastAPI/RQ process.
+3. **BrightData optimized path**  
+   If `SCRAPER_PROVIDER_ORDER` starts with `brightdata`, the router first tries the BrightData scraper path that can handle multi-page retrieval and parser-specific diagnostics.
+
+4. **Generic provider fallback**  
+   The router loops through providers from `SCRAPER_PROVIDER_ORDER`, usually:
+   `brightdata,zyte,http` in production or `http,brightdata,zyte` in local/dev.
+
+5. **Generic parser stack**  
+   After HTML fetch, `parse_generic_reviews()` tries:
+   - TripAdvisor-specific helper for `tripadvisor.*`
+   - JSON-LD/schema.org reviews
+   - microdata reviews
+   - embedded JSON state (`__NEXT_DATA__`, Apollo/Redux-like state)
+   - heuristic HTML review cards
+
+### Platform Notes
+
+| Platform | Current implementation |
+|---|---|
+| Apple App Store | Public RSS JSON. No BrightData/Zyte needed. |
+| Google Play | `google-play-scraper` package. No BrightData/Zyte needed. |
+| TripAdvisor | Custom HTML parser through `review_html.py`, with provider fallback for fetching. |
+| G2/Capterra/TrustRadius/Trustpilot/etc. | Generic parser stack through BrightData/Zyte/direct HTTP depending on availability. |
+| Sites with hard blocking | Return friendly UI error; provider-specific details remain in server logs and job attempts. |
 
 ---
 
-### 3.4 Queue System — Redis RQ
+## 5. LLM and RAG Design
 
-RQ (Redis Queue) uses the same Redis instance that backs the cache, with no separate broker config or celeryconfig. Workers are plain Python processes.
+### Model Configuration
 
-```python
-# workers/queues.py
-from redis import Redis
-from rq import Queue
+| Concern | Current choice |
+|---|---|
+| Primary chat model | `gpt-5.4` via `OPENAI_CHAT_MODEL` |
+| Chat fallbacks | `claude-haiku-4.7`, then `claude-sonnet-4.7` via `ANTHROPIC_FALLBACK_MODELS` |
+| Embeddings | OpenAI `text-embedding-3-small` |
+| Embedding dimensions | `1536` by default; changing this requires a migration and full re-embed |
+| Retrieval top-k | `RAG_TOP_K`, capped at 100 |
+| Streaming | Server-sent events from `POST /api/chat` |
+| Observability | Optional LangSmith tracing |
 
-redis_conn = Redis.from_url(settings.REDIS_URL)
+The app currently uses direct `httpx` calls to OpenAI and Anthropic instead of LangChain. This keeps the request path explicit and avoids framework coupling while still supporting provider fallback and LangSmith traces.
 
-scrape_queue = Queue("scrape", connection=redis_conn)  # 4 workers, I/O bound
-embed_queue  = Queue("embed",  connection=redis_conn)  # 2 workers, rate-limited
-file_queue   = Queue("file",   connection=redis_conn)  # 2 workers, CPU bound
+### RAG Scope Rule
+
+Chat must be scoped to the active review set:
+
+- If a saved session is selected, source IDs come from `review_session_sources`.
+- If no saved session is selected, source IDs come from the current workspace ingestions.
+- Retrieval SQL always filters by `source_id IN (...)` before ordering by vector distance.
+- The system prompt instructs the model to answer only from supplied review excerpts.
+- The prompt includes the **total review count** for the active scope so “how many reviews” answers do not confuse chunks with reviews.
+
+### Retrieval Flow
+
+```mermaid
+flowchart LR
+  question["User question"]
+  embedq["embed_texts([question])\nOpenAI embeddings"]
+  sql["pgvector SQL\nWHERE source_id IN scope\nORDER BY embedding distance\nLIMIT RAG_TOP_K"]
+  prompt["Prompt builder\nreview count + excerpts"]
+  model["OpenAI gpt-5.4\nfallback: Claude Haiku -> Sonnet"]
+  clean["plain_text_response()\nremove Markdown"]
+  stream["SSE stream to browser"]
+  save["Persist chat messages\nfor saved sessions"]
+
+  question --> embedq --> sql --> prompt --> model --> clean --> stream
+  clean --> save
 ```
 
-```python
-# Enqueueing a job from FastAPI
-from rq import Retry
+### Chat Failure Behavior
 
-job = scrape_queue.enqueue(
-    scrape_url_task,
-    url,
-    job_id=str(ingest_job.id),
-    retry=Retry(max=3, interval=[60, 120, 240]),  # exponential backoff
-    job_timeout=600,
-)
+- If no chunks are available for the current scope, the API returns a clear “no embedded review content” answer.
+- If OpenAI fails before producing output, Anthropic fallback models are tried in configured order.
+- If a streaming provider fails after partial output, the client receives an error event rather than silently switching mid-answer.
+
+---
+
+## 6. Ingestion Flows
+
+### URL Ingestion
+
+```mermaid
+sequenceDiagram
+  participant U as User
+  participant F as Frontend
+  participant A as FastAPI
+  participant R as Redis/RQ
+  participant W as Worker
+  participant P as Providers
+  participant L as OpenAI
+  participant DB as PostgreSQL/pgvector
+
+  U->>F: Submit URL + page count
+  F->>A: POST /api/ingest/url
+  A->>A: validate_public_http_url()
+  A->>DB: create review_source + ingest_job
+  A->>R: enqueue scrape_url_task(job_id, source_id, url, page_count)
+  A-->>F: job + source
+  F->>A: poll GET /api/ingest/jobs/{job_id}
+  R->>W: deliver job
+  W->>DB: mark running + progress stats
+  W->>P: scrape_url()
+  P-->>W: normalized ReviewDocument[]
+  W->>DB: insert_reviews()
+  W->>L: embed inserted reviews
+  W->>DB: insert review_chunks + mark done
+  A-->>F: done status
 ```
 
-```python
-# workers/tasks.py — RQ jobs are plain functions
-def scrape_url_task(url: str, source_id: str) -> None:
-    import asyncio
-    asyncio.run(_scrape_async(url, source_id))
+### File Import
 
-async def _scrape_async(url: str, source_id: str) -> None:
-    docs = await ScraperRouter().scrape(url)
-    # normalise → chunk → embed → INSERT review_chunks
-    ...
+```mermaid
+sequenceDiagram
+  participant U as User
+  participant F as Frontend
+  participant A as FastAPI
+  participant S3 as S3
+  participant R as Redis/RQ
+  participant W as Worker
+  participant L as OpenAI
+  participant DB as PostgreSQL/pgvector
+
+  U->>F: Select CSV/JSON/JSONL
+  F->>A: POST /api/import/file
+  A->>A: validate extension + max size
+  A->>S3: upload original file
+  A->>DB: create review_source + ingest_job
+  A->>R: enqueue import_file_task(job_id, source_id, s3://...)
+  A-->>F: job + source
+  R->>W: deliver import job
+  W->>S3: download file to temp path
+  W->>W: parse_review_file()
+  W->>DB: insert_reviews()
+  W->>L: embed inserted reviews
+  W->>DB: insert review_chunks + mark done
 ```
 
-**Starting workers:**
+### Job Cancellation
+
+The frontend can call `POST /api/ingest/jobs/{job_id}/cancel`. Workers check cancellation before progress updates, before embedding, and before marking final success. Completed, failed, and cancelled jobs are terminal.
+
+---
+
+## 7. Storage Design
+
+### Relational Tables
+
+| Table | Purpose |
+|---|---|
+| `review_sources` | One row per uploaded file or scraped URL. Stores platform, URL, embedding model, and config such as S3 file info. |
+| `ingest_jobs` | Tracks background job state, errors, stats, current page/provider, cancellation, and attempts. |
+| `reviews` | Normalized review records with dedupe fingerprint per source. |
+| `review_sessions` | Saved analysis sessions. |
+| `review_session_sources` | Many-to-many link between sessions and sources. |
+| `chat_messages` | Persisted chat history for saved sessions. |
+| `review_chunks` | Raw SQL-managed pgvector table created by Alembic; contains review chunks and embeddings. |
+
+### pgvector
+
+`review_chunks.embedding` is `vector(1536)` by default. The HNSW index uses cosine distance:
+
+```sql
+CREATE INDEX review_chunks_embedding_idx
+ON review_chunks USING hnsw (embedding vector_cosine_ops)
+WITH (m = 16, ef_construction = 64);
+```
+
+The query path embeds the question, filters chunks by source IDs, and orders by vector distance:
+
+```sql
+SELECT review_id, source_id, content, metadata,
+       1 - (embedding <=> CAST(:embedding AS vector)) AS score
+FROM review_chunks
+WHERE source_id IN :source_ids
+ORDER BY embedding <=> CAST(:embedding AS vector)
+LIMIT :limit;
+```
+
+---
+
+## 8. Observability
+
+### LangSmith
+
+LangSmith is optional and disabled by default:
+
 ```bash
-rq worker scrape embed file --with-scheduler
+LANGSMITH_TRACING=false
+LANGSMITH_API_KEY=
+LANGSMITH_PROJECT=reviewlens-ai
+LANGSMITH_ENDPOINT=https://api.smith.langchain.com
+LANGSMITH_WORKSPACE_ID=
 ```
 
-**Monitoring:** `rq-dashboard` (drop-in web UI, single pip install).
+When enabled, the app traces:
 
-**Why RQ over Celery for this project:**
-- Zero config — no celeryconfig, no result backend setup, no `@app.task` decorators
-- Jobs are plain functions; easy to test in isolation
-- `rq-dashboard` is simpler than Flower for a small team
-- Redis already in the stack for cache; no additional broker
-- Upgrade path to Celery is straightforward if routing complexity grows
+- `embed_source_reviews`
+- `embed_texts`
+- `retrieve_relevant_chunks`
+- OpenAI chat calls and streams
+- Anthropic chat calls and streams
+- model fallback chain
 
-Redis also serves as the cache layer (rate-limit counters, embedding deduplication).
+The tracing wrapper redacts API keys from settings objects and summarizes embedding vectors instead of sending the full numeric arrays.
+
+### Server Logs
+
+Raw scraper provider errors are logged server-side. The UI receives friendly messages for blocked or unparsable review sites.
 
 ---
 
-### 3.5 LLM / RAG Layer
+## 9. Deployment
 
-```python
-# Simplified LangChain LCEL pipeline (llm/chain.py)
+### Render
 
-from langchain_core.runnables import RunnablePassthrough
-from langchain_core.output_parsers import StrOutputParser
+`render.yaml` defines:
 
-chain = (
-    {"context": retriever | format_docs, "question": RunnablePassthrough()}
-    | review_rag_prompt
-    | llm_with_fallback          # see below
-    | StrOutputParser()
-)
+- `reviewlens-ai-web`: Docker web service serving the frontend and API.
+- `reviewlens-ai-worker`: Docker worker running `scripts/start-worker.sh`, listening on `import` and `scrape`.
+- Required env vars for Postgres, Redis, S3, OpenAI, Anthropic, BrightData, Zyte, and optional LangSmith.
+
+The Docker image runs:
+
+```bash
+alembic upgrade head && uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8082}
 ```
 
-**Model configuration with fallback:**
+The worker runs:
 
-```python
-from langchain_openai import ChatOpenAI
-from langchain_anthropic import ChatAnthropic
-from langchain_core.runnables import RunnableWithFallbacks
-
-primary = ChatOpenAI(
-    model="gpt-4o",
-    streaming=True,
-    temperature=0.2,
-)
-
-fallback = ChatAnthropic(
-    model="claude-sonnet-4-6",
-    streaming=True,
-    temperature=0.2,
-)
-
-llm_with_fallback: RunnableWithFallbacks = primary.with_fallbacks(
-    [fallback],
-    exceptions_to_handle=(RateLimitError, APIConnectionError),
-)
+```bash
+rq worker --url "$REDIS_URL" import scrape
 ```
 
-**RAG retrieval — pgvector:**
+### Local Docker
 
-```python
-from langchain_postgres import PGVector
-from langchain_openai import OpenAIEmbeddings
-
-embeddings = OpenAIEmbeddings(model="text-embedding-3-small")  # 1536 dims
-
-vector_store = PGVector(
-    connection=settings.ASYNC_DATABASE_URL,
-    collection_name="review_chunks",
-    embeddings=embeddings,
-    use_jsonb=True,
-)
-
-# Scoped to one or more sources; filter is pushed into the SQL WHERE clause,
-# not evaluated post-retrieval, so it is not bypassable via prompt.
-retriever = vector_store.as_retriever(
-    search_type="mmr",
-    search_kwargs={
-        "k": 8,
-        "fetch_k": 30,           # MMR candidate pool
-        "filter": {"source_id": {"$in": selected_source_ids}},
-    },
-)
-```
-
-The `langchain_postgres.PGVector` integration issues queries of the form:
-```sql
-SELECT content, metadata, 1 - (embedding <=> $1) AS score
-FROM langchain_pg_embedding
-WHERE collection_id = $2
-  AND (metadata->>'source_id') = ANY($3)
-ORDER BY embedding <=> $1
-LIMIT 30;
-```
-— MMR re-ranking happens in Python after this fetch.
-
-**Embedding dimensions and HNSW index** (in the Alembic migration):
-```sql
-CREATE EXTENSION IF NOT EXISTS vector;
-
-CREATE TABLE review_chunks (
-    id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    review_id   uuid NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
-    source_id   uuid NOT NULL REFERENCES review_sources(id) ON DELETE CASCADE,
-    chunk_index int  NOT NULL,
-    content     text NOT NULL,
-    embedding   vector(1536),        -- matches text-embedding-3-small
-    metadata    jsonb DEFAULT '{}'
-);
-
--- HNSW: fast approximate search, better query latency than IVFFlat
-CREATE INDEX review_chunks_embedding_idx
-    ON review_chunks USING hnsw (embedding vector_cosine_ops)
-    WITH (m = 16, ef_construction = 64);
-
--- Full-text index for optional hybrid (BM25 + vector) search
-CREATE INDEX review_chunks_fts_idx
-    ON review_chunks USING gin(to_tsvector('english', content));
-```
-
-**Embedding provider fallback:** `text-embedding-3-small` is the primary. Anthropic does not ship embeddings — if OpenAI is unavailable, fall back to **Voyage AI** (`voyage-3-lite`, also 1024 dims, requires re-indexing) or a local `BAAI/bge-small-en-v1.5` (768 dims via sentence-transformers). Switching providers requires a full re-embed since dimensions differ; this is a rare operational event. The embedding model is stored per `review_source` so mixed-provider indexes are detectable.
-
-**Empty-context guard:**
-```python
-def build_chain(retriever):
-    def guard_empty_context(inputs):
-        if not inputs["context"].strip():
-            return "No reviews have been loaded for this source yet."
-        return None
-
-    return (
-        RunnablePassthrough.assign(context=retriever | format_docs)
-        | RunnableLambda(lambda x: guard_empty_context(x) or x)
-        | review_rag_prompt
-        | llm_with_fallback
-        | StrOutputParser()
-    )
-```
-
-**Prompt design (system):**
-```
-You are a review analysis assistant. Answer only using the review excerpts 
-provided below. If the answer cannot be found in the reviews, say so. 
-Do not make up information or draw on external knowledge.
-
-Reviews:
-{context}
-```
+`docker-compose.yml` runs the web app, worker, and Redis locally. Database may be local, external, or managed depending on `DATABASE_URL`. `RUNNING_IN_DOCKER=1` prevents accidentally pointing a container at `localhost` for Postgres.
 
 ---
 
-### 3.6 Storage Layer
-
-All persistent state lives in a single PostgreSQL 16 instance with the `pgvector` extension. There is no separate vector database service.
-
-**Full schema (via SQLAlchemy async + asyncpg + Alembic):**
-
-```sql
--- Metadata tables
-review_sources (
-    id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    name        text NOT NULL,
-    url         text,
-    platform    text,               -- amazon | google_maps | g2 | capterra | file | ...
-    embedding_model text NOT NULL DEFAULT 'text-embedding-3-small',
-    created_at  timestamptz DEFAULT now(),
-    config      jsonb DEFAULT '{}'  -- scraper-specific settings
-)
-
-ingest_jobs (
-    id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    source_id   uuid NOT NULL REFERENCES review_sources(id) ON DELETE CASCADE,
-    status      text NOT NULL,      -- pending | running | done | failed
-    error       text,
-    started_at  timestamptz,
-    finished_at timestamptz
-)
-
-reviews (
-    id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    source_id   uuid NOT NULL REFERENCES review_sources(id) ON DELETE CASCADE,
-    author      text,
-    rating      numeric(3,1),
-    body        text NOT NULL,
-    reviewed_at timestamptz,
-    raw         jsonb DEFAULT '{}'  -- original scraped payload
-)
-
--- Vector store: replaces Weaviate/Chroma entirely
-review_chunks (
-    id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    review_id   uuid NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
-    source_id   uuid NOT NULL REFERENCES review_sources(id) ON DELETE CASCADE,
-    chunk_index int NOT NULL,
-    content     text NOT NULL,
-    embedding   vector(1536),       -- text-embedding-3-small; update if model changes
-    metadata    jsonb DEFAULT '{}'
-)
-
-chat_sessions (
-    id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    source_ids  uuid[] NOT NULL,
-    created_at  timestamptz DEFAULT now()
-)
-
-chat_messages (
-    id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    session_id  uuid NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
-    role        text NOT NULL,      -- user | assistant
-    content     text NOT NULL,
-    model_used  text,
-    latency_ms  int,
-    created_at  timestamptz DEFAULT now()
-)
-```
-
-**Indexes:**
-
-```sql
--- Approximate nearest-neighbour search (HNSW is faster at query time than IVFFlat)
-CREATE INDEX review_chunks_embedding_idx
-    ON review_chunks USING hnsw (embedding vector_cosine_ops)
-    WITH (m = 16, ef_construction = 64);
-
--- Source-scoped filtering (hits before ANN in the planner)
-CREATE INDEX review_chunks_source_idx ON review_chunks (source_id);
-
--- Full-text for optional hybrid search
-CREATE INDEX review_chunks_fts_idx
-    ON review_chunks USING gin(to_tsvector('english', content));
-
--- Fast job status polling
-CREATE INDEX ingest_jobs_status_idx ON ingest_jobs (status, started_at DESC);
-```
-
-**Why pgvector over a dedicated vector database:**
-- One service to run, back up, and operate — dramatically simpler Docker Compose and ops
-- Familiar SQL tooling for debugging (inspect embeddings, delete by source, check counts)
-- HNSW in pgvector at this scale (tens of millions of review chunks) comfortably matches query latency of self-hosted Weaviate
-- Source-scoped filtering via a standard `WHERE source_id = ANY($1)` clause — no tenancy configuration required
-- If scale demands it, the migration path to pgvector on managed Postgres (RDS, AlloyDB, Supabase) or to a dedicated vector DB is straightforward: embeddings are just vectors
-
-
----
-
-### 3.7 Observability — Langfuse (recommended over LangSmith)
-
-**Why Langfuse over LangSmith:**
-
-| Feature | LangSmith | Langfuse |
-|---|---|---|
-| Open source | No | Yes (MIT) |
-| Self-hostable | No | Yes (Docker Compose) |
-| LangChain integration | Native | Native (CallbackHandler) |
-| Datasets + Evals | Yes | Yes |
-| Cost | Paid above free tier | Free self-hosted |
-| Prompt management | Yes | Yes |
-
-**Integration is one line:**
-
-```python
-from langfuse.callback import CallbackHandler
-
-langfuse_handler = CallbackHandler(
-    public_key=settings.LANGFUSE_PUBLIC_KEY,
-    secret_key=settings.LANGFUSE_SECRET_KEY,
-    host=settings.LANGFUSE_HOST,  # self-hosted URL
-)
-
-# Pass to any LangChain invocation
-chain.invoke({"question": q}, config={"callbacks": [langfuse_handler]})
-```
-
-**Application metrics:** Prometheus + Grafana (standard FastAPI instrumentation via `prometheus-fastapi-instrumentator`)
-
-**Logging:** Structured JSON logs (structlog) → shipped to Loki or CloudWatch
-
-**Alerting:** Grafana alerts on p95 latency, RQ queue depth, scrape error rate
-
----
-
-## 4. Data Flow Diagrams
-
-### 4.1 URL Ingestion Flow
-
-```
-User                  Frontend         FastAPI          RQ Worker           Storage
- │                       │                │                   │               │
- │  Submit URL           │                │                   │               │
- │──────────────────────►│                │                   │               │
- │                       │  POST /ingest  │                   │               │
- │                       │───────────────►│                   │               │
- │                       │                │  enqueue task     │               │
- │                       │                │──────────────────►│               │
- │                       │  { job_id }    │                   │               │
- │                       │◄───────────────│                   │               │
- │  Show job progress     │                │                   │               │
- │◄──────────────────────│                │  ScraperRouter    │               │
- │                       │                │  .scrape(url)     │               │
- │                       │                │                   │  HTTP/Browser │
- │                       │                │                   │──────────────►│
- │                       │                │                   │  raw HTML     │
- │                       │                │                   │◄──────────────│
- │                       │                │                   │               │
- │                       │                │                   │  parse+embed  │
- │                       │                │                   │──────────────►│
- │                       │                │                   │  PostgreSQL   │
- │                       │                │                   │  (pgvector)   │
- │                       │                │  job status=DONE  │               │
- │                       │  SSE update    │◄──────────────────│               │
- │◄──────────────────────│◄───────────────│                   │               │
-```
-
-### 4.2 Chat Flow
-
-```
-User             Frontend         FastAPI (WS)      LangChain        PostgreSQL
- │                  │                  │                 │            (pgvector)
- │  Ask question    │                  │                 │                  │
- │─────────────────►│                  │                 │                  │
- │                  │  WS message      │                 │                  │
- │                  │─────────────────►│                 │                  │
- │                  │                  │  embed question │                  │
- │                  │                  │────────────────►│                  │
- │                  │                  │                 │  HNSW MMR query  │
- │                  │                  │                 │─────────────────►│
- │                  │                  │                 │  top-k chunks    │
- │                  │                  │                 │◄─────────────────│
- │                  │                  │                 │  build prompt    │
- │                  │                  │                 │  stream → OpenAI │
- │                  │  stream tokens   │  stream tokens  │                  │
- │◄─────────────────│◄─────────────────│◄────────────────│                  │
-```
-
----
-
-## 5. Technology Stack Summary
-
-| Layer | Technology | Version |
-|---|---|---|
-| Frontend | Plain HTML + Vanilla JS + Tailwind CSS (CDN) | — |
-| API Server | FastAPI + Uvicorn + Gunicorn | FastAPI 0.115+ |
-| Task Queue | Redis RQ | rq 1.x |
-| Scraping (Tier 1) | httpx + BeautifulSoup4 | async |
-| Scraping (Tier 2) | Playwright (async) + Scrapy | latest |
-| Scraping (Tier 3) | Firecrawl SDK / BrightData SDK / Zyte API | — |
-| LLM Orchestration | LangChain (LCEL) | 0.3+ |
-| LLM Providers | OpenAI (gpt-4o) + Anthropic (claude-sonnet-4-6) | — |
-| Embeddings | OpenAI text-embedding-3-small (fallback: Voyage AI) | — |
-| Vector Store | pgvector extension on PostgreSQL 16 | 0.7+ |
-| LangChain PGVector | langchain_postgres | 0.0.x |
-| Relational DB | PostgreSQL 16 + SQLAlchemy async | — |
-| Migrations | Alembic | — |
-| Observability | Langfuse (self-hosted) + Prometheus + Grafana | — |
-| Hosting | Render (Web Services + Background Workers) | — |
-| Containerisation | Docker + Docker Compose (local dev only) | — |
-| CI/CD | GitHub Actions | — |
-
----
-
-## 6. Deployment Architecture
-
-### Production — Render
-
-Render handles TLS, reverse proxying, and health checks automatically. No Nginx, no Traefik, no container orchestration config needed.
-
-```
-Render Platform
-    │
-    ├──► Web Service: FastAPI  (serves frontend static files + API)
-    │    Start command: uvicorn main:app --host 0.0.0.0 --port $PORT
-    │    Frontend HTML/JS served via FastAPI StaticFiles mount
-    │    Auto-scaling: 1–N instances based on traffic
-    │
-    ├──► Background Worker: RQ scrape (4 threads)
-    │    Start command: rq worker scrape --with-scheduler
-    │
-    ├──► Background Worker: RQ embed + file (2 threads each)
-    │    Start command: rq worker embed file
-    │
-    ├──► Render Redis          (managed, queue + cache)
-    │
-    └──► Render PostgreSQL     (managed, pgvector extension enabled)
-```
-
-**Render service map (`render.yaml`):**
-```yaml
-services:
-  - type: web
-    name: reviewlens-api
-    env: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
-    envVars:
-      - key: DATABASE_URL
-        fromDatabase:
-          name: reviewlens-db
-          property: connectionString
-      - key: REDIS_URL
-        fromService:
-          name: reviewlens-redis
-          property: connectionString
-
-  - type: worker
-    name: reviewlens-worker-scrape
-    env: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: rq worker scrape --with-scheduler
-
-  - type: worker
-    name: reviewlens-worker-embed
-    env: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: rq worker embed file
-
-databases:
-  - name: reviewlens-db
-    plan: standard
-    postgresMajorVersion: 16
-
-  - name: reviewlens-redis
-    plan: starter
-```
-
-**pgvector on Render PostgreSQL:** The Render managed Postgres supports extensions via `CREATE EXTENSION IF NOT EXISTS vector;` in the first Alembic migration — no extra config needed.
-
-### Local Development — Docker Compose
-
-`docker-compose.yml` runs the full stack locally (FastAPI + RQ workers + PostgreSQL + Redis + Langfuse). No Nginx or Traefik needed locally either — FastAPI's Uvicorn serves directly on `localhost:8000`.
-
-```yaml
-# docker-compose.yml (abbreviated)
-services:
-  api:       # uvicorn backend.main:app --reload
-  worker:    # rq worker scrape embed file
-  db:        # postgres:16 with pgvector
-  redis:     # redis:7-alpine
-  langfuse:  # self-hosted observability
-```
-
----
-
-## 7. Security Considerations
-
-Requirement #1 calls for "secure access" while Requirement #2 specifies no authentication. These are reconciled by treating security as *infrastructure hardening of a public endpoint* rather than identity-based access control. Concretely:
+## 10. Security and Safety Boundaries
 
 | Risk | Mitigation |
 |---|---|
-| Scraping abuse (someone uses us to hammer sites) | Rate limit `/ingest` to 10 req/min/IP via `slowapi`; domain allowlist configurable |
-| Prompt injection via review content | System prompt instructs model to ignore instructions in context; input sanitised before embedding |
-| SSRF via URL input | Validate URL scheme (http/https only); block private IP ranges (10.x, 192.168.x, 169.254.x) |
-| File upload abuse | Validate MIME type server-side; max file size 50 MB; virus scan with ClamAV (optional) |
-| XSS | React escapes by default; DOMPurify for any rendered HTML review content |
-| SQL injection | SQLAlchemy parameterised queries only |
-| Sensitive keys | All API keys in environment variables / Docker secrets; never committed |
-| DoS on LLM | Per-session token budget enforced in chain config; RQ worker concurrency caps |
+| SSRF from URL ingestion | `validate_public_http_url()` blocks non-public/private targets. |
+| Scraper abuse | Jobs go through Redis/RQ; provider order is explicit; failures are friendly to users and detailed in logs. |
+| Prompt injection from reviews | System prompt restricts answers to excerpts only; retrieval is source-scoped in SQL. |
+| Wrong-session data leakage | Chat uses saved session source IDs or current workspace source IDs only. |
+| File upload accessibility across Render services | Uploaded files are placed in S3-compatible storage before enqueueing import jobs. |
+| Secrets in traces | LangSmith wrapper redacts settings and embedding vectors. |
+| JSON serialization failures from scraper payloads | Provider adapters must convert raw payloads to JSON-safe data before storage. |
 
 ---
 
-## 8. Phased Implementation Plan
+## 11. Current Implementation Status
 
-### Phase 1 — Core Foundation (Weeks 1–3)
-- [ ] Project scaffold: monorepo with `frontend/`, `backend/`, `docker/`
-- [ ] FastAPI app with health endpoint, CORS, rate limiting
-- [ ] PostgreSQL schema + Alembic migrations (including `CREATE EXTENSION vector`)
-- [ ] File ingestion: CSV/JSON upload, normalise, store in Postgres
-- [ ] pgvector embedding pipeline via `langchain_postgres.PGVector` (RQ job)
-- [ ] Basic chat endpoint (no streaming) with LangChain RAG
-- [ ] Plain HTML/JS frontend: file upload + basic chat UI (served via FastAPI StaticFiles)
-- [ ] Docker Compose for full local stack
+Implemented:
 
-### Phase 2 — Scraping (Weeks 4–5)
-- [ ] Tier 1 scrapers: G2, Capterra (BeautifulSoup)
-- [ ] Tier 2: Playwright integration + browser pool
-- [ ] Tier 3: Firecrawl SDK integration (easiest managed provider to start)
-- [ ] Amazon + Google Maps adapters (Tier 3)
-- [ ] Scrapy spider for paginated crawls
-- [ ] BrightData / Zyte as second/third fallback providers
-- [ ] Ingestion job status polling (SSE)
+- CSV/JSON/JSONL/NDJSON file import through S3 + RQ.
+- URL ingestion through RQ.
+- BrightData, Zyte, and direct HTTP fallback.
+- Apple App Store RSS reviews.
+- Google Play reviews through `google-play-scraper`.
+- TripAdvisor-specific parser.
+- PostgreSQL + pgvector review chunks.
+- RAG chat with streaming SSE.
+- OpenAI primary chat model `gpt-5.4`.
+- Anthropic fallback models `claude-haiku-4.7`, `claude-sonnet-4.7`.
+- Saved sessions and persisted chat history.
+- Review search/filter UI.
+- Job cancellation.
+- Optional LangSmith tracing.
 
-### Phase 3 — Production Hardening (Weeks 6–7)
-- [ ] Streaming chat (WebSocket token streaming)
-- [ ] OpenAI primary + Anthropic fallback with `with_fallbacks()`
-- [ ] HNSW index tuning (`m`, `ef_construction`, `ef_search`) under realistic data volume
-- [ ] Langfuse integration + Prometheus metrics
-- [ ] Grafana dashboards
-- [ ] `render.yaml` service definitions + environment variable wiring
+Still open / future:
 
-### Phase 4 — UX Polish + Observability (Week 8)
-- [ ] Review browser with filters (platform, rating, date)
-- [ ] Chat history persistence
-- [ ] Model selector in UI
-- [ ] Langfuse prompt management
-- [ ] Load testing (Locust) + performance tuning
-- [ ] Production Docker Compose with resource limits
-
----
-
-## 9. Open Questions / Decisions Needed
-
-1. **Amazon**: Their TOS prohibits scraping. To be addressed in a later phase — Amazon ingestion will not be in the initial release.
-~~**Firecrawl vs BrightData**~~ — **Decided:** BrightData is the primary Tier 3 provider. Firecrawl will be evaluated as an alternative based on results.
-
-~~**Google Maps**~~ — **Decided:** use the Places API (requires Google Cloud billing). More reliable and legally cleaner than scraping.
-
-~~**Embedding cache**~~ — **Decided:** not needed. Data volume is small enough that re-embedding on ingest is acceptable; no Redis caching layer for embeddings.
-
-~~**Multi-tenancy scope**~~ — **Decided:** all users share a single namespace. No session isolation needed. `source_id` filtering on `review_chunks` scopes chat to the selected source.
-
-~~**pgvector scale ceiling**~~ — **Decided:** pgvector is sufficient for this project's scale. No migration path to a dedicated vector DB needed.
+- Better platform-specific parsers for heavily blocked SaaS review sites.
+- Object-storage cleanup lifecycle for uploaded files.
+- More robust eval set for RAG answer quality.
+- Optional hybrid search if vector-only retrieval becomes noisy.
+- Authentication/multi-tenancy if this moves beyond demo/internal use.

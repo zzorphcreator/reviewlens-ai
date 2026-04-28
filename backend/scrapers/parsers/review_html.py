@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlparse
 
@@ -20,6 +21,18 @@ def parse_review_html(html: str, source_url: str = "") -> tuple[list[dict[str, s
         or (product_name_from_url(source_url) if source_url else None)
     )
     json_reviews = parse_json_ld_reviews(soup)
+    if "apps.shopify.com" in urlparse(source_url).netloc.lower():
+        shopify_reviews = parse_shopify_reviews(soup)
+        if shopify_reviews:
+            return best_review_set(json_reviews, shopify_reviews), product_name
+    if "yelp.com" in urlparse(source_url).netloc.lower():
+        yelp_reviews = parse_yelp_reviews(soup)
+        if yelp_reviews:
+            return best_review_set(json_reviews, yelp_reviews), product_name
+    if "booking.com" in urlparse(source_url).netloc.lower():
+        booking_reviews = parse_booking_reviews(soup)
+        if booking_reviews:
+            return best_review_set(json_reviews, booking_reviews), product_name
     if "tripadvisor.com" in urlparse(source_url).netloc.lower():
         tripadvisor_reviews = parse_tripadvisor_reviews(soup)
         if tripadvisor_reviews:
@@ -169,6 +182,254 @@ def parse_html_reviews(soup: BeautifulSoup) -> list[dict[str, str]]:
     return dedupe_reviews(reviews)
 
 
+def parse_shopify_reviews(soup: BeautifulSoup) -> list[dict[str, str]]:
+    reviews: list[dict[str, str]] = []
+    cards = soup.select('[data-merchant-review][data-review-content-id]')
+    for card in cards:
+        body_node = card.select_one(
+            '[data-truncate-review]:not([data-reply-id]) [data-truncate-content-copy]'
+        ) or card.select_one('[data-truncate-review]:not([data-reply-id])')
+        body = clean_text(body_node.get_text(" ", strip=True)) if body_node else ""
+        if not body:
+            continue
+        text = clean_text(card.get_text(" ", strip=True))
+        rating_source = first_text(card.select_one('[aria-label*="out of 5" i]')) or first_text(
+            card.select_one('[aria-label*="star" i]')
+        )
+        rating = rating_from_text(rating_source or "") or rating_from_node(card, text)
+        author = (
+            first_text(card.select_one("span[title]"))
+            or first_text(card.select_one(".tw-text-heading-xs"))
+            or ""
+        )
+        reviews.append(
+            {
+                "title": "",
+                "body": body,
+                "pros": "",
+                "cons": "",
+                "rating": rating,
+                "author": author,
+                "date": date_from_text(text),
+            }
+        )
+    return dedupe_reviews(reviews)
+
+
+def parse_yelp_reviews(soup: BeautifulSoup) -> list[dict[str, str]]:
+    reviews: list[dict[str, str]] = []
+    for script in soup.select("script"):
+        raw = script.string or script.get_text()
+        if not raw:
+            continue
+        script_type = (script.get("type") or "").lower()
+        if script_type == "application/json":
+            for payload in extract_json_payloads(raw):
+                for item in walk_json(payload):
+                    review = yelp_review_from_json(item)
+                    if review:
+                        reviews.append(review)
+            continue
+        lowered = raw.lower()
+        if "review" not in lowered or "rating" not in lowered:
+            continue
+        for payload in extract_json_payloads(raw):
+            for item in walk_json(payload):
+                review = yelp_review_from_json(item)
+                if review:
+                    reviews.append(review)
+    return dedupe_reviews(reviews)
+
+
+def parse_booking_reviews(soup: BeautifulSoup) -> list[dict[str, str]]:
+    reviews: list[dict[str, str]] = []
+    cards = soup.select('[data-testid="review-card"], [data-testid^="review-card"]')
+    if not cards:
+        cards = soup.select('[data-testid="review-card-container"]')
+    for card in cards:
+        text = clean_text(card.get_text(" ", strip=True))
+        if len(text) < 60:
+            continue
+        title = first_text(card.select_one('[data-testid="review-title"]')) or ""
+        pros = first_text(card.select_one('[data-testid="review-positive-text"]')) or ""
+        cons = first_text(card.select_one('[data-testid="review-negative-text"]')) or ""
+        body = pros or cons or text
+        rating_raw = first_text(card.select_one('[data-testid="review-score"]'))
+        rating = rating_from_text(rating_raw or "")
+        if not rating and rating_raw:
+            rating = rating_from_numeric_text(rating_raw)
+        author = (
+            first_text(card.select_one('[data-testid="review-author"]'))
+            or first_text(card.select_one('[data-testid="reviewer-name"]'))
+            or first_text(card.select_one('[data-testid="reviewer"]'))
+            or ""
+        )
+        date_value = (
+            first_text(card.select_one('time[datetime]'))
+            or first_text(card.select_one('[data-testid="review-date"]'))
+            or date_from_text(text)
+        )
+        reviews.append(
+            {
+                "title": clean_text(title),
+                "body": clean_text(body),
+                "pros": clean_text(pros),
+                "cons": clean_text(cons),
+                "rating": rating,
+                "author": author,
+                "date": date_value,
+            }
+        )
+    return dedupe_reviews(reviews)
+
+
+def extract_json_payloads(raw: str) -> list[Any]:
+    payloads: list[Any] = []
+    cleaned = raw.strip()
+    if cleaned.startswith("{") or cleaned.startswith("["):
+        parsed = _safe_json_load(cleaned)
+        if parsed is not None:
+            payloads.append(parsed)
+            return payloads
+
+    markers = [
+        "window.__INITIAL_STATE__",
+        "__INITIAL_STATE__",
+        "window.__PRELOADED_STATE__",
+        "__PRELOADED_STATE__",
+        "window.__NEXT_DATA__",
+        "__NEXT_DATA__",
+        "window.__APOLLO_STATE__",
+        "__APOLLO_STATE__",
+    ]
+    for marker in markers:
+        idx = cleaned.find(marker)
+        if idx < 0:
+            continue
+        candidate = extract_balanced_json(cleaned, idx)
+        if not candidate:
+            continue
+        parsed = _safe_json_load(candidate)
+        if parsed is not None:
+            payloads.append(parsed)
+    return payloads
+
+
+def extract_balanced_json(raw: str, start_idx: int) -> str:
+    start_obj = raw.find("{", start_idx)
+    start_arr = raw.find("[", start_idx)
+    if start_obj == -1:
+        start_obj = None
+    if start_arr == -1:
+        start_arr = None
+    if start_obj is None and start_arr is None:
+        return ""
+    if start_obj is None or (start_arr is not None and start_arr < start_obj):
+        start = start_arr
+        open_char = "["
+        close_char = "]"
+    else:
+        start = start_obj
+        open_char = "{"
+        close_char = "}"
+
+    depth = 0
+    in_string = False
+    escape = False
+    for idx in range(start, len(raw)):
+        ch = raw[idx]
+        if in_string:
+            if escape:
+                escape = False
+                continue
+            if ch == "\\":
+                escape = True
+                continue
+            if ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == open_char:
+            depth += 1
+            continue
+        if ch == close_char:
+            depth -= 1
+            if depth == 0:
+                return raw[start : idx + 1]
+    return ""
+
+
+def _safe_json_load(value: str) -> Any | None:
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return None
+
+
+def yelp_review_from_json(item: Any) -> dict[str, str] | None:
+    if not isinstance(item, dict):
+        return None
+    review_id = item.get("reviewId") or item.get("id") or ""
+    rating = extract_rating_value(item.get("rating") or item.get("ratingValue") or item.get("reviewRating"))
+    comment = extract_text_value(item.get("comment") or item.get("reviewText") or item.get("text"))
+    if not comment or not rating:
+        return None
+    user = item.get("user") or item.get("author") or {}
+    if isinstance(user, dict):
+        author = (
+            user.get("displayName")
+            or user.get("name")
+            or user.get("nickname")
+            or user.get("userNickname")
+            or ""
+        )
+    else:
+        author = str(user or "")
+    reviewed_at = normalize_yelp_date(
+        item.get("timeCreated")
+        or item.get("createdAt")
+        or item.get("localizedDate")
+        or item.get("date")
+        or item.get("publishedDate")
+    )
+    return {
+        "title": "",
+        "body": clean_text(str(comment)),
+        "pros": "",
+        "cons": "",
+        "rating": clean_text(str(rating)),
+        "author": clean_text(str(author)) or "Anonymous",
+        "date": reviewed_at,
+    }
+
+
+def extract_text_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        for key in ["text", "content", "value", "raw", "markup"]:
+            if key in value:
+                return extract_text_value(value[key])
+    if isinstance(value, list):
+        parts = [extract_text_value(item) for item in value]
+        return " ".join(part for part in parts if part)
+    return ""
+
+
+def extract_rating_value(value: Any) -> str:
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, dict):
+        for key in ["ratingValue", "value", "rating"]:
+            if key in value:
+                return extract_rating_value(value[key])
+    if isinstance(value, str):
+        return value
+    return ""
+
+
 def parse_tripadvisor_reviews(soup: BeautifulSoup) -> list[dict[str, str]]:
     reviews: list[dict[str, str]] = []
     for rating_node in soup.select('[data-automation="bubbleRatingImage"]'):
@@ -240,11 +501,31 @@ def tripadvisor_review_author(card) -> str:
 
 def tripadvisor_review_date(text: str) -> str:
     match = re.search(
-        r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{4}\b",
+        r"\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+(20\d{2})\b",
         text,
         re.IGNORECASE,
     )
-    return match.group(0) if match else ""
+    if not match:
+        return ""
+    month_lookup = {
+        "jan": "01",
+        "feb": "02",
+        "mar": "03",
+        "apr": "04",
+        "may": "05",
+        "jun": "06",
+        "jul": "07",
+        "aug": "08",
+        "sep": "09",
+        "sept": "09",
+        "oct": "10",
+        "nov": "11",
+        "dec": "12",
+    }
+    month = month_lookup.get(match.group(1).lower()[:4], "")
+    if not month:
+        return ""
+    return f"{match.group(2)}-{month}-01"
 
 
 def review_card_debug_fragments(html: str, limit: int = 2) -> list[str]:
@@ -358,7 +639,73 @@ def date_from_node(node, text: str) -> str:
 
 def date_from_text(value: str) -> str:
     match = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", value)
-    return match.group(1) if match else ""
+    if match:
+        return match.group(1)
+    match = re.search(
+        r"\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|"
+        r"Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+"
+        r"(\d{1,2}),\s+(20\d{2})\b",
+        value,
+        re.IGNORECASE,
+    )
+    month_lookup = {
+        "jan": "01",
+        "feb": "02",
+        "mar": "03",
+        "apr": "04",
+        "may": "05",
+        "jun": "06",
+        "jul": "07",
+        "aug": "08",
+        "sep": "09",
+        "sept": "09",
+        "oct": "10",
+        "nov": "11",
+        "dec": "12",
+    }
+    if match:
+        month_key = match.group(1).strip().lower()[:4]
+        month = month_lookup.get(month_key[:3], "")
+        if not month:
+            return ""
+        day = match.group(2).zfill(2)
+        return f"{match.group(3)}-{month}-{day}"
+
+    match = re.search(
+        r"\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|"
+        r"Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+"
+        r"(20\d{2})\b",
+        value,
+        re.IGNORECASE,
+    )
+    if not match:
+        return ""
+    month_key = match.group(1).strip().lower()[:4]
+    month = month_lookup.get(month_key[:3], "")
+    if not month:
+        return ""
+    return f"{match.group(2)}-{month}-01"
+
+
+def rating_from_numeric_text(value: str) -> str:
+    match = re.search(r"([0-9]+(?:\.[0-9]+)?)", value)
+    if not match:
+        return ""
+    score = float(match.group(1))
+    if score > 5:
+        score = score / 2
+    return f"{score:.1f}".rstrip("0").rstrip(".")
+
+
+def normalize_yelp_date(value: Any) -> str:
+    if isinstance(value, (int, float)):
+        timestamp = int(value)
+        if timestamp > 1_000_000_000_000:
+            timestamp = int(timestamp / 1000)
+        return datetime.fromtimestamp(timestamp, tz=UTC).strftime("%Y-%m-%d")
+    if isinstance(value, str):
+        return date_from_text(value)
+    return ""
 
 
 def extract_between(value: str, starts: list[str], ends: list[str]) -> str:

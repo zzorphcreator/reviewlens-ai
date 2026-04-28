@@ -9,6 +9,11 @@ body {
 
 .info-popover {
   position: relative;
+  z-index: 10000;
+  isolation: isolate;
+  display: inline-flex;
+  align-items: center;
+  overflow: visible;
 }
 
 .info-popover summary {
@@ -43,7 +48,11 @@ body {
   position: absolute;
   left: 0;
   top: 1.6rem;
-  z-index: 30;
+  z-index: 2147483647;
+  pointer-events: auto;
+  overflow: visible;
+  text-transform: none;
+  letter-spacing: normal;
 }
 
 .info-popover[open] .info-popover-panel {
@@ -51,6 +60,10 @@ body {
 }
 
 .info-popover:hover .info-popover-panel {
+  display: block;
+}
+
+.info-popover:focus-within .info-popover-panel {
   display: block;
 }
 
