@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,7 +12,7 @@ from backend.core.url_validation import UnsafeUrlError, validate_public_http_url
 from backend.storage.database import get_session
 from backend.storage.service import create_source_with_job, serialize_job
 from backend.workers.queues import scrape_queue
-from backend.workers.tasks import scrape_url_task, scrape_url_task_async
+from backend.workers.tasks import scrape_url_task
 
 router = APIRouter(prefix="/api/ingest", tags=["ingest"])
 logger = logging.getLogger(__name__)
@@ -59,7 +59,6 @@ class UrlIngestRequest(BaseModel):
 @router.post("/url", status_code=status.HTTP_202_ACCEPTED)
 async def ingest_url(
     payload: UrlIngestRequest,
-    background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
     settings: Settings = Depends(get_settings),
 ) -> dict:
@@ -84,37 +83,34 @@ async def ingest_url(
         },
     )
 
-    if settings.queue_mode == "rq":
-        try:
-            scrape_queue.enqueue(
-                scrape_url_task, job.id, source.id, url, payload.page_count, job_timeout=600
-            )
-        except Exception as exc:
-            logger.exception(
-                "Failed to enqueue scrape job",
-                extra={
-                    "job_id": job.id,
-                    "queue": scrape_queue.name,
-                    "redis_host": _redis_host(settings.redis_url),
-                    "redis_db": _redis_db(settings.redis_url),
-                },
-            )
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Failed to enqueue scrape job.",
-            ) from exc
-        logger.warning(
-            "Enqueued scrape job",
+    try:
+        scrape_queue.enqueue(
+            scrape_url_task, job.id, source.id, url, payload.page_count, job_timeout=600
+        )
+    except Exception as exc:
+        logger.exception(
+            "Failed to enqueue scrape job",
             extra={
                 "job_id": job.id,
                 "queue": scrape_queue.name,
-                "queue_count": scrape_queue.count,
                 "redis_host": _redis_host(settings.redis_url),
                 "redis_db": _redis_db(settings.redis_url),
             },
         )
-    else:
-        background_tasks.add_task(scrape_url_task_async, job.id, source.id, url, payload.page_count)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Failed to enqueue scrape job.",
+        ) from exc
+    logger.warning(
+        "Enqueued scrape job",
+        extra={
+            "job_id": job.id,
+            "queue": scrape_queue.name,
+            "queue_count": scrape_queue.count,
+            "redis_host": _redis_host(settings.redis_url),
+            "redis_db": _redis_db(settings.redis_url),
+        },
+    )
 
     return {
         "job": serialize_job(job),

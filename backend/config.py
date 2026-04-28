@@ -1,8 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
 import os
-from typing import Literal
-
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -12,7 +10,6 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/reviewlens"
     redis_url: str = "redis://localhost:6379/0"
     log_level: str | None = None
-    queue_mode: Literal["inline", "rq"] = "inline"
     upload_dir: Path = Path("uploads")
     max_upload_bytes: int = Field(default=50 * 1024 * 1024, ge=1)
     scraper_provider_order: str = "http,brightdata,zyte"

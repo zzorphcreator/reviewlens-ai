@@ -10,8 +10,6 @@ services:
         sync: false
       - key: REDIS_URL
         sync: false
-      - key: QUEUE_MODE
-        value: rq
       - key: UPLOAD_DIR
         value: /app/uploads
       - key: RUNNING_IN_DOCKER
@@ -34,14 +32,12 @@ services:
     runtime: docker
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    dockerCommand: sh -c 'rq worker --url "$REDIS_URL" import scrape'
+    dockerCommand: sh ./scripts/start-worker.sh
     envVars:
       - key: DATABASE_URL
         sync: false
       - key: REDIS_URL
         sync: false
-      - key: QUEUE_MODE
-        value: rq
       - key: UPLOAD_DIR
         value: /app/uploads
       - key: RUNNING_IN_DOCKER

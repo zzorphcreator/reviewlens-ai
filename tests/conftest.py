@@ -8,7 +8,6 @@ from alembic.config import Config
 
 if test_database_url := os.environ.get("TEST_DATABASE_URL"):
     os.environ["DATABASE_URL"] = test_database_url
-os.environ.setdefault("QUEUE_MODE", "inline")
 os.environ.setdefault("UPLOAD_DIR", "test_uploads")
 
 _migrations_applied = False

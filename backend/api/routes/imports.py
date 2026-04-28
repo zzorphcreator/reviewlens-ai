@@ -4,7 +4,7 @@ import uuid
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config import Settings, get_settings
@@ -12,14 +12,13 @@ from backend.ingestion.file_processor import SUPPORTED_EXTENSIONS
 from backend.storage.database import get_session
 from backend.storage.service import create_source_with_job, serialize_job
 from backend.workers.queues import import_queue
-from backend.workers.tasks import import_file_task, import_file_task_async
+from backend.workers.tasks import import_file_task
 
 router = APIRouter(prefix="/api/import", tags=["import"])
 
 
 @router.post("/file", status_code=status.HTTP_202_ACCEPTED)
 async def import_file(
-    background_tasks: BackgroundTasks,
     file: Annotated[UploadFile, File()],
     source_name: Annotated[str | None, Form()] = None,
     session: AsyncSession = Depends(get_session),
@@ -43,10 +42,7 @@ async def import_file(
         config={"filename": file.filename, "bytes": size},
     )
 
-    if settings.queue_mode == "rq":
-        import_queue.enqueue(import_file_task, job.id, source.id, str(saved_path), job_timeout=600)
-    else:
-        background_tasks.add_task(import_file_task_async, job.id, source.id, str(saved_path))
+    import_queue.enqueue(import_file_task, job.id, source.id, str(saved_path), job_timeout=600)
 
     return {
         "job": serialize_job(job),

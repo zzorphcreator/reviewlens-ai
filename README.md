@@ -6,7 +6,7 @@ Current slice:
 
 - FastAPI app serving a static single-page UI.
 - Deterministic CSV, JSON, and JSONL review imports.
-- Async-style import jobs with inline dev mode or RQ mode.
+- Async-style import jobs backed by Redis/RQ.
 - Normalized review storage with per-source dedupe.
 - Saved sessions that group ingested sources and store chat messages.
 - pgvector-backed review embeddings generated after ingestion.
@@ -26,7 +26,6 @@ Copy `.env.example` to `.env` and point `DATABASE_URL` at PostgreSQL:
 
 ```bash
 DATABASE_URL="postgresql://USER:PASSWORD@HOST:5432/reviewlens"
-QUEUE_MODE="inline"
 UPLOAD_DIR="uploads"
 ```
 
@@ -65,8 +64,7 @@ Create a new migration after model changes:
 alembic revision --autogenerate -m "describe change"
 ```
 
-Use `QUEUE_MODE=rq` when Redis/RQ workers are running:
-
+Redis/RQ workers are required for ingestion jobs:
 ```bash
 rq worker import scrape
 ```
