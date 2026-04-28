@@ -1,8 +1,9 @@
 from functools import lru_cache
 from pathlib import Path
+import os
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -36,6 +37,16 @@ class Settings(BaseSettings):
     embedding_dimensions: int = 1536
     rag_top_k: int = Field(default=8, ge=1, le=100)
     llm_timeout_seconds: float = Field(default=60.0, ge=1)
+
+    @model_validator(mode="after")
+    def _reject_local_database_in_docker(self) -> "Settings":
+        if os.getenv("RUNNING_IN_DOCKER") == "1":
+            lowered = self.database_url.lower()
+            if "@localhost" in lowered or "@127.0.0.1" in lowered:
+                raise ValueError(
+                    "DATABASE_URL points to localhost inside Docker. Use the db service hostname."
+                )
+        return self
 
     @property
     def scraper_providers(self) -> list[str]:

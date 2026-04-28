@@ -1,35 +1,27 @@
 services:
   - type: web
-    name: review-demo-web
+    name: reviewlens-ai-web
     runtime: docker
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    healthCheckPath: /api/v1/health
+    healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
         sync: false
       - key: REDIS_URL
         sync: false
-      - key: CORS_ORIGINS
-        sync: false
-      - key: USE_EXTERNAL_LLM
-        value: "true"
+      - key: QUEUE_MODE
+        value: rq
+      - key: UPLOAD_DIR
+        value: /app/uploads
+      - key: RUNNING_IN_DOCKER
+        value: "1"
       - key: OPENAI_API_KEY
         sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
-      - key: LANGSMITH_TRACING
-        value: "false"
-      - key: LANGSMITH_API_KEY
-        sync: false
-      - key: LANGSMITH_WORKSPACE_ID
-        sync: false
-      - key: LANGSMITH_PROJECT
-        value: reviewlens-ai
-      - key: URL_FETCH_PROVIDER
-        value: auto
-      - key: PROVIDER_ORDER
-        value: brightdata,zyte,local
+      - key: SCRAPER_PROVIDER_ORDER
+        value: brightdata,zyte,http
       - key: BRIGHTDATA_API_KEY
         sync: false
       - key: BRIGHTDATA_ZONE
@@ -38,34 +30,28 @@ services:
         sync: false
 
   - type: worker
-    name: review-demo-worker
+    name: reviewlens-ai-worker
     runtime: docker
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    dockerCommand: sh -c 'rq worker --url "$REDIS_URL" default'
+    dockerCommand: sh -c 'rq worker --url "$REDIS_URL" import scrape'
     envVars:
       - key: DATABASE_URL
         sync: false
       - key: REDIS_URL
         sync: false
-      - key: USE_EXTERNAL_LLM
-        value: "true"
+      - key: QUEUE_MODE
+        value: rq
+      - key: UPLOAD_DIR
+        value: /app/uploads
+      - key: RUNNING_IN_DOCKER
+        value: "1"
       - key: OPENAI_API_KEY
         sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
-      - key: LANGSMITH_TRACING
-        value: "false"
-      - key: LANGSMITH_API_KEY
-        sync: false
-      - key: LANGSMITH_WORKSPACE_ID
-        sync: false
-      - key: LANGSMITH_PROJECT
-        value: reviewlens-ai
-      - key: URL_FETCH_PROVIDER
-        value: auto
-      - key: PROVIDER_ORDER
-        value: brightdata,zyte,local
+      - key: SCRAPER_PROVIDER_ORDER
+        value: brightdata,zyte,http
       - key: BRIGHTDATA_API_KEY
         sync: false
       - key: BRIGHTDATA_ZONE
