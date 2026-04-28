@@ -15,6 +15,7 @@ COPY backend ./backend
 COPY frontend ./frontend
 COPY alembic ./alembic
 COPY alembic.ini ./alembic.ini
+COPY scripts ./scripts
 
 EXPOSE 8082
 
