@@ -14,6 +14,10 @@ docker-compose.yml
 *secret*.json
 service-account*.json
 
+debug/
+uploads/
+reviewlens_ai.egg-info/
+test_uploads/
 # Python
 __pycache__/
 *.py[cod]
