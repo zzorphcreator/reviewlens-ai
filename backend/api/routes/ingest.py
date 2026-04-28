@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import logging
+from urllib.parse import urlparse
+
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +15,23 @@ from backend.workers.queues import scrape_queue
 from backend.workers.tasks import scrape_url_task, scrape_url_task_async
 
 router = APIRouter(prefix="/api/ingest", tags=["ingest"])
+logger = logging.getLogger(__name__)
+
+
+def _db_host(database_url: str) -> str:
+    try:
+        parsed = urlparse(database_url)
+    except ValueError:
+        return "unknown"
+    return parsed.hostname or "unknown"
+
+
+def _db_name(database_url: str) -> str:
+    try:
+        parsed = urlparse(database_url)
+    except ValueError:
+        return "unknown"
+    return parsed.path.lstrip("/") or "unknown"
 
 
 class UrlIngestRequest(BaseModel):
@@ -38,6 +58,14 @@ async def ingest_url(
         platform="url",
         url=url,
         config={"tier": "managed", "parser": "generic", "page_count": payload.page_count},
+    )
+    logger.warning(
+        "Created ingest job",
+        extra={
+            "job_id": job.id,
+            "db_host": _db_host(settings.database_url),
+            "db_name": _db_name(settings.database_url),
+        },
     )
 
     if settings.queue_mode == "rq":
