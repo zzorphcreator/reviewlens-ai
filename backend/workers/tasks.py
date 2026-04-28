@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import tempfile
 from pathlib import Path
+from urllib.parse import urlparse
 
+from backend.config import get_settings
 from backend.ingestion.file_processor import parse_review_file
 from backend.llm.embeddings import embed_source_reviews
 from backend.scrapers.router import scrape_url
 from backend.storage.database import SessionLocal
+from backend.storage.s3 import download_file
 from backend.storage.service import (
     insert_reviews,
     is_job_cancelled,
@@ -25,12 +29,12 @@ SCRAPE_FAILURE_MESSAGE = (
 )
 
 
-def import_file_task(job_id: str, source_id: str, file_path: str) -> None:
+def import_file_task(job_id: str, source_id: str, file_location: str) -> None:
     asyncio.run(
         import_file_task_async(
             job_id=job_id,
             source_id=source_id,
-            file_path=file_path,
+            file_location=file_location,
             raise_on_failure=True,
         )
     )
@@ -39,16 +43,36 @@ def import_file_task(job_id: str, source_id: str, file_path: str) -> None:
 async def import_file_task_async(
     job_id: str,
     source_id: str,
-    file_path: str,
+    file_location: str,
     *,
     raise_on_failure: bool = False,
 ) -> None:
-    await _import_file(
-        job_id=job_id,
-        source_id=source_id,
-        file_path=Path(file_path),
-        raise_on_failure=raise_on_failure,
-    )
+    temp_path: Path | None = None
+    resolved_path = Path(file_location)
+    if file_location.startswith("s3://"):
+        parsed = urlparse(file_location)
+        if not parsed.path:
+            raise ValueError("Invalid S3 file location.")
+        settings = get_settings()
+        if parsed.netloc and settings.s3_bucket and parsed.netloc != settings.s3_bucket:
+            raise ValueError("S3 bucket mismatch for uploaded file.")
+        suffix = Path(parsed.path).suffix
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+        temp_path = Path(temp_file.name)
+        temp_file.close()
+        download_file(key=parsed.path.lstrip("/"), destination=temp_path)
+        resolved_path = temp_path
+
+    try:
+        await _import_file(
+            job_id=job_id,
+            source_id=source_id,
+            file_path=resolved_path,
+            raise_on_failure=raise_on_failure,
+        )
+    finally:
+        if temp_path:
+            temp_path.unlink(missing_ok=True)
 
 
 def scrape_url_task(job_id: str, source_id: str, url: str, page_count: int = 1) -> None:

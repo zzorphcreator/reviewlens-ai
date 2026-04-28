@@ -8,6 +8,7 @@ from sqlalchemy import bindparam, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config import Settings, get_settings
+from backend.llm.tracing import traceable
 from backend.storage.models import Review, utc_now
 
 
@@ -32,6 +33,7 @@ def chunk_review(review: Review, *, max_chars: int = 1800) -> list[str]:
     return chunks
 
 
+@traceable(name="embed_source_reviews", run_type="chain")
 async def embed_source_reviews(
     session: AsyncSession,
     *,
@@ -93,6 +95,7 @@ async def embed_source_reviews(
     return {"embedded_reviews": embedded_reviews, "embedded_chunks": embedded_chunks}
 
 
+@traceable(name="openai_embeddings", run_type="embedding")
 async def embed_texts(texts: list[str], *, settings: Settings | None = None) -> list[list[float]]:
     settings = settings or get_settings()
     if not settings.openai_api_key:
@@ -115,6 +118,7 @@ async def embed_texts(texts: list[str], *, settings: Settings | None = None) -> 
     return [item["embedding"] for item in sorted(payload["data"], key=lambda item: item["index"])]
 
 
+@traceable(name="retrieve_relevant_chunks", run_type="retriever")
 async def retrieve_relevant_chunks(
     session: AsyncSession,
     *,

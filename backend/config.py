@@ -34,16 +34,40 @@ class Settings(BaseSettings):
     embedding_dimensions: int = 1536
     rag_top_k: int = Field(default=8, ge=1, le=100)
     llm_timeout_seconds: float = Field(default=60.0, ge=1)
+    langsmith_tracing: bool = False
+    langsmith_api_key: str | None = None
+    langsmith_project: str = "reviewlens-ai"
+    langsmith_endpoint: str = "https://api.smith.langchain.com"
+    langsmith_workspace_id: str | None = None
+    s3_bucket: str | None = None
+    s3_region: str | None = None
+    s3_endpoint: str | None = None
+    s3_access_key_id: str | None = None
+    s3_secret_access_key: str | None = None
 
     @model_validator(mode="after")
-    def _reject_local_database_in_docker(self) -> "Settings":
+    def _validate_runtime_settings(self) -> "Settings":
         if os.getenv("RUNNING_IN_DOCKER") == "1":
             lowered = self.database_url.lower()
             if "@localhost" in lowered or "@127.0.0.1" in lowered:
                 raise ValueError(
                     "DATABASE_URL points to localhost inside Docker. Use the db service hostname."
                 )
+        self._configure_langsmith_env()
         return self
+
+    def _configure_langsmith_env(self) -> None:
+        if not self.langsmith_tracing:
+            os.environ.setdefault("LANGSMITH_TRACING", "false")
+            return
+
+        os.environ["LANGSMITH_TRACING"] = "true"
+        os.environ["LANGSMITH_PROJECT"] = self.langsmith_project
+        os.environ["LANGSMITH_ENDPOINT"] = self.langsmith_endpoint
+        if self.langsmith_api_key:
+            os.environ["LANGSMITH_API_KEY"] = self.langsmith_api_key
+        if self.langsmith_workspace_id:
+            os.environ["LANGSMITH_WORKSPACE_ID"] = self.langsmith_workspace_id
 
     @property
     def scraper_providers(self) -> list[str]:

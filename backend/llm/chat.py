@@ -9,6 +9,7 @@ import re
 import httpx
 
 from backend.config import Settings, get_settings
+from backend.llm.tracing import traceable
 
 
 STRICT_RAG_SYSTEM_PROMPT = """You are ReviewLens AI.
@@ -29,6 +30,7 @@ class ChatResult:
     latency_ms: int
 
 
+@traceable(name="answer_with_fallback", run_type="chain")
 async def answer_with_fallback(
     *,
     question: str,
@@ -91,6 +93,7 @@ def build_user_prompt(
     )
 
 
+@traceable(name="openai_chat_completion", run_type="llm")
 async def call_openai_chat(*, settings: Settings, prompt: str) -> str:
     async with httpx.AsyncClient(timeout=settings.llm_timeout_seconds) as client:
         response = await client.post(
@@ -110,6 +113,7 @@ async def call_openai_chat(*, settings: Settings, prompt: str) -> str:
     return payload["choices"][0]["message"]["content"].strip()
 
 
+@traceable(name="openai_chat_stream", run_type="llm")
 async def stream_openai_chat(*, settings: Settings, prompt: str) -> AsyncIterator[str]:
     async with httpx.AsyncClient(timeout=settings.llm_timeout_seconds) as client:
         async with client.stream(
@@ -139,6 +143,7 @@ async def stream_openai_chat(*, settings: Settings, prompt: str) -> AsyncIterato
                     yield token
 
 
+@traceable(name="anthropic_chat_completion", run_type="llm")
 async def call_anthropic_chat(*, settings: Settings, model: str, prompt: str) -> str:
     async with httpx.AsyncClient(timeout=settings.llm_timeout_seconds) as client:
         response = await client.post(
@@ -162,6 +167,7 @@ async def call_anthropic_chat(*, settings: Settings, model: str, prompt: str) ->
     ).strip()
 
 
+@traceable(name="anthropic_chat_stream", run_type="llm")
 async def stream_anthropic_chat(
     *, settings: Settings, model: str, prompt: str
 ) -> AsyncIterator[str]:

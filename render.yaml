@@ -12,11 +12,31 @@ services:
         sync: false
       - key: UPLOAD_DIR
         value: /app/uploads
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_REGION
+        sync: false
+      - key: S3_ENDPOINT
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
       - key: RUNNING_IN_DOCKER
         value: "1"
       - key: OPENAI_API_KEY
         sync: false
       - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: LANGSMITH_TRACING
+        value: "false"
+      - key: LANGSMITH_API_KEY
+        sync: false
+      - key: LANGSMITH_PROJECT
+        value: reviewlens-ai
+      - key: LANGSMITH_ENDPOINT
+        value: https://api.smith.langchain.com
+      - key: LANGSMITH_WORKSPACE_ID
         sync: false
       - key: SCRAPER_PROVIDER_ORDER
         value: brightdata,zyte,http
@@ -40,11 +60,31 @@ services:
         sync: false
       - key: UPLOAD_DIR
         value: /app/uploads
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_REGION
+        sync: false
+      - key: S3_ENDPOINT
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
       - key: RUNNING_IN_DOCKER
         value: "1"
       - key: OPENAI_API_KEY
         sync: false
       - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: LANGSMITH_TRACING
+        value: "false"
+      - key: LANGSMITH_API_KEY
+        sync: false
+      - key: LANGSMITH_PROJECT
+        value: reviewlens-ai
+      - key: LANGSMITH_ENDPOINT
+        value: https://api.smith.langchain.com
+      - key: LANGSMITH_WORKSPACE_ID
         sync: false
       - key: SCRAPER_PROVIDER_ORDER
         value: brightdata,zyte,http

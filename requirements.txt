@@ -22,6 +22,7 @@ psycopg[binary]
 pgvector
 redis
 rq
+boto3
 slowapi
 pytest
 pytest-asyncio

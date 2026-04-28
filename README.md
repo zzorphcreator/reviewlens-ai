@@ -45,10 +45,15 @@ ANTHROPIC_FALLBACK_MODELS="claude-haiku-4.7,claude-sonnet-4.7"
 EMBEDDING_MODEL="text-embedding-3-small"
 EMBEDDING_DIMENSIONS="1536"
 RAG_TOP_K="8"
+LANGSMITH_TRACING="false"
+LANGSMITH_API_KEY="..."
+LANGSMITH_PROJECT="reviewlens-ai"
 ```
 
 OpenAI is used for embeddings and as the primary chat provider. If the OpenAI chat request fails,
 the app tries Anthropic models in `ANTHROPIC_FALLBACK_MODELS` order.
+When `LANGSMITH_TRACING=true`, embeddings, retrieval, and chat provider calls are traced with
+LangSmith. API keys are redacted from traced settings, and embedding vectors are summarized.
 
 ## Database Migrations
 
@@ -67,6 +72,15 @@ alembic revision --autogenerate -m "describe change"
 Redis/RQ workers are required for ingestion jobs:
 ```bash
 rq worker import scrape
+```
+
+File uploads are stored in S3 so workers can access them:
+```bash
+S3_BUCKET="your-bucket"
+S3_REGION="us-east-1"
+S3_ACCESS_KEY_ID="..."
+S3_SECRET_ACCESS_KEY="..."
+S3_ENDPOINT=""
 ```
 
 ## Scraper Providers

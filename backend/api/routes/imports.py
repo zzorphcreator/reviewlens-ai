@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.config import Settings, get_settings
 from backend.ingestion.file_processor import SUPPORTED_EXTENSIONS
+from backend.storage.s3 import upload_file
 from backend.storage.database import get_session
 from backend.storage.service import create_source_with_job, serialize_job
 from backend.workers.queues import import_queue
@@ -31,18 +32,44 @@ async def import_file(
             detail=f"Unsupported file type '{suffix}'. Use CSV, JSON, JSONL, or NDJSON.",
         )
 
+    if not settings.s3_bucket:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="S3 is not configured for uploads.",
+        )
+
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
     saved_path = settings.upload_dir / f"{uuid.uuid4()}{suffix}"
     size = await _save_upload(file, saved_path, settings.max_upload_bytes)
+    s3_key = f"uploads/{saved_path.name}"
+    try:
+        upload_file(path=saved_path, key=s3_key)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to upload file to S3.",
+        ) from exc
+    finally:
+        saved_path.unlink(missing_ok=True)
 
     source, job = await create_source_with_job(
         session,
         name=source_name or file.filename or "Uploaded reviews",
         platform="file",
-        config={"filename": file.filename, "bytes": size},
+        config={
+            "filename": file.filename,
+            "bytes": size,
+            "storage": {"backend": "s3", "key": s3_key, "bucket": settings.s3_bucket},
+        },
     )
 
-    import_queue.enqueue(import_file_task, job.id, source.id, str(saved_path), job_timeout=600)
+    import_queue.enqueue(
+        import_file_task,
+        job.id,
+        source.id,
+        f"s3://{settings.s3_bucket}/{s3_key}",
+        job_timeout=600,
+    )
 
     return {
         "job": serialize_job(job),
