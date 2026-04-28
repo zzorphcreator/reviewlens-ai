@@ -1,0 +1,86 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+docker-compose.yml
+*credentials*.json
+*credential*.json
+*secrets*.json
+*secret*.json
+service-account*.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.python-version
+.venv/
+venv/
+env/
+ENV/
+.mypy_cache/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+pip-wheel-metadata/
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Scraping/browser artifacts
+html_debug/
+debug_html/
+playwright-report/
+test-results/
+.scrapy/
+downloads/
+
+# Logs and temp files
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+*.bak
+*.swp
+*.swo
+
+# Binary/archive outputs
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+*.7z
+*.gz
+*.bz2
+*.xz
+*.parquet
+*.feather
+*.pkl
+*.pickle
+
+# Frontend/dependency artifacts
+node_modules/
+.next/
+out/
+coverage/
+
+# Docker/local tooling
+.docker/
+docker-compose.override.yml
+
+# IDE/OS
+.idea/
+.vscode/
+*.code-workspace
+.DS_Store
+Thumbs.db
+desktop.ini

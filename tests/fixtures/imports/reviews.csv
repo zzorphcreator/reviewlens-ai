@@ -1,0 +1,3 @@
+author,rating,title,body,reviewed_at,source_url,metadata
+Ada Lovelace,5,Fast setup,"The import flow was simple and predictable.",2026-04-20,https://example.com/reviews/1,"{""plan"": ""pro""}"
+Grace Hopper,4,Useful search,"The UI is bare, but the normalized data preview is already useful.",2026-04-21,https://example.com/reviews/2,"{""plan"": ""team""}"

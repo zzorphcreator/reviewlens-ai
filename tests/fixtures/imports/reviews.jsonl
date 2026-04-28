@@ -1,0 +1,2 @@
+{"author":"Margaret Hamilton","rating":5,"title":"Deterministic","body":"JSONL import is easy to generate from exports.","reviewed_at":"2026-04-23","source_url":"https://example.com/reviews/4","metadata":{"plan":"pro"}}
+{"author":"Dorothy Vaughan","rating":3.5,"title":"Needs scraping","body":"File import is good, URL ingestion should come next.","reviewed_at":"2026-04-24","source_url":"https://example.com/reviews/5","metadata":{"plan":"starter"}}

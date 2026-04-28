@@ -1,0 +1,75 @@
+services:
+  - type: web
+    name: review-demo-web
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: USE_EXTERNAL_LLM
+        value: "true"
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: LANGSMITH_TRACING
+        value: "false"
+      - key: LANGSMITH_API_KEY
+        sync: false
+      - key: LANGSMITH_WORKSPACE_ID
+        sync: false
+      - key: LANGSMITH_PROJECT
+        value: reviewlens-ai
+      - key: URL_FETCH_PROVIDER
+        value: auto
+      - key: PROVIDER_ORDER
+        value: brightdata,zyte,local
+      - key: BRIGHTDATA_API_KEY
+        sync: false
+      - key: BRIGHTDATA_ZONE
+        sync: false
+      - key: ZYTE_API_KEY
+        sync: false
+
+  - type: worker
+    name: review-demo-worker
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: sh -c 'rq worker --url "$REDIS_URL" default'
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: USE_EXTERNAL_LLM
+        value: "true"
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: LANGSMITH_TRACING
+        value: "false"
+      - key: LANGSMITH_API_KEY
+        sync: false
+      - key: LANGSMITH_WORKSPACE_ID
+        sync: false
+      - key: LANGSMITH_PROJECT
+        value: reviewlens-ai
+      - key: URL_FETCH_PROVIDER
+        value: auto
+      - key: PROVIDER_ORDER
+        value: brightdata,zyte,local
+      - key: BRIGHTDATA_API_KEY
+        sync: false
+      - key: BRIGHTDATA_ZONE
+        sync: false
+      - key: ZYTE_API_KEY
+        sync: false
+

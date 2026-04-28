@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ReviewLens AI</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="/css/app.css" />
+  </head>
+  <body class="min-h-screen bg-gradient-to-br from-sky-950 via-slate-950 to-indigo-950 text-slate-100">
+    <main class="mx-auto flex min-h-screen max-w-[1500px] flex-col gap-5 px-5 py-5">
+      <header class="rounded-3xl border border-white/10 bg-white/10 p-3 shadow-2xl backdrop-blur">
+        <p class="text-center text-sm font-semibold uppercase tracking-[0.26em] text-sky-200">
+          ReviewLens AI
+        </p>
+      </header>
+
+      <section class="rounded-3xl border border-white/10 bg-white/10 p-4 shadow-2xl backdrop-blur">
+        <div id="ingestion-controls" class="grid gap-3 xl:grid-cols-[1.6fr_0.55fr_1fr_auto_auto_auto] xl:items-end">
+          <label>
+            <span class="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-slate-300">
+              URL
+              <details class="info-popover">
+                <summary aria-label="URL tips">i</summary>
+                <div class="info-popover-panel">
+                  <p>Start with deterministic CSV, JSON, or JSONL imports, or try:</p>
+                  <p class="mt-2 font-mono text-xs text-sky-200">
+                    https://www.capterra.com/p/135003/Slack/reviews
+                  </p>
+                  <p class="mt-1 font-mono text-xs text-sky-200">
+                    https://www.trustradius.com/products/monday/reviews
+                  </p>
+                </div>
+              </details>
+            </span>
+            <input
+              id="scrape-url"
+              type="url"
+              class="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/70 px-3 py-2 text-sm outline-none focus:border-sky-300"
+              placeholder="https://example.com/reviews"
+            />
+          </label>
+
+          <label>
+            <span class="text-xs font-medium uppercase tracking-wide text-slate-300">Number of Pages</span>
+            <input
+              id="page-count"
+              type="number"
+              min="1"
+              max="100"
+              value="1"
+              class="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/70 px-3 py-2 text-sm outline-none focus:border-sky-300"
+            />
+          </label>
+
+          <label>
+            <span class="text-xs font-medium uppercase tracking-wide text-slate-300">Session Name</span>
+            <input
+              id="session-name"
+              class="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/70 px-3 py-2 text-sm outline-none focus:border-sky-300"
+              placeholder="Slack review analysis"
+            />
+          </label>
+
+          <button
+            id="import-url"
+            class="rounded-xl bg-sky-300 px-5 py-2.5 text-sm font-bold text-slate-950 hover:bg-sky-200"
+            type="button"
+          >
+            Import Review from URL
+          </button>
+
+          <div class="flex items-center gap-2">
+            <button
+              id="upload-trigger"
+              class="rounded-xl bg-sky-300 px-5 py-2.5 text-sm font-bold text-slate-950 hover:bg-sky-200"
+              type="button"
+            >
+              Upload CSV/JSON
+            </button>
+            <details class="info-popover">
+              <summary aria-label="Expected fields">i</summary>
+              <div class="info-popover-panel">
+                <p class="font-semibold text-slate-100">Expected fields</p>
+                <code class="mt-2 block whitespace-pre-wrap text-xs text-sky-200"
+                  >author, rating, body, reviewed_at, title?, source_url?, metadata?</code
+                >
+              </div>
+            </details>
+          </div>
+
+          <button
+            id="save-session"
+            class="rounded-xl bg-slate-400/50 px-5 py-2.5 text-sm font-bold text-slate-900 disabled:cursor-not-allowed disabled:opacity-50 enabled:bg-sky-300 enabled:hover:bg-sky-200"
+            type="button"
+            disabled
+            title="Save ingested reviews and future chat history as a reloadable session"
+          >
+            Save Session
+          </button>
+
+          <form id="upload-form" class="hidden">
+            <input
+              id="review-file"
+              name="file"
+              type="file"
+              accept=".csv,.json,.jsonl,.ndjson"
+            />
+            <input id="source-name" name="source_name" type="hidden" />
+          </form>
+        </div>
+
+        <div
+          id="status"
+          class="mt-3 flex items-center gap-2 rounded-xl border border-white/10 bg-slate-950/60 px-3 py-1.5 text-xs"
+        >
+          <span id="status-spinner" class="status-spinner hidden" aria-hidden="true"></span>
+          <span id="status-message">Ready.</span>
+        </div>
+        <div class="mt-2 flex justify-start">
+          <button
+            id="cancel-ingestion"
+            class="hidden rounded-xl border border-rose-300/30 bg-rose-300/10 px-3 py-1.5 text-xs font-semibold text-rose-100 hover:bg-rose-300/20"
+            type="button"
+          >
+            Cancel Ingestion
+          </button>
+        </div>
+      </section>
+
+      <section id="search-section" class="rounded-3xl border border-white/10 bg-white/10 p-4 shadow-2xl backdrop-blur">
+        <div class="flex items-center justify-between gap-3">
+          <div>
+            <h2 class="text-lg font-semibold">Search Reviews</h2>
+            <p class="mt-1 text-sm text-slate-400">
+              Filter reviews by saved session, text, and rating. More fields can be added later.
+            </p>
+          </div>
+          <button
+            id="toggle-search"
+            class="rounded-xl border border-sky-300/30 bg-sky-300/10 px-4 py-2 text-sm font-semibold text-sky-100 hover:bg-sky-300/20"
+            type="button"
+            aria-expanded="false"
+            aria-controls="search-controls"
+          >
+            Show
+          </button>
+        </div>
+        <div id="search-controls" class="mt-3 hidden grid gap-3 lg:grid-cols-[1.2fr_1.4fr_0.65fr_auto] lg:items-end">
+          <label>
+            <span class="text-xs font-medium uppercase tracking-wide text-slate-300">Session</span>
+            <select
+              id="session-filter"
+              class="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/70 px-3 py-2 text-sm outline-none focus:border-sky-300"
+            >
+              <option value="">All ingested reviews</option>
+            </select>
+          </label>
+
+          <label>
+            <span class="text-xs font-medium uppercase tracking-wide text-slate-300">Text Search</span>
+            <input
+              id="review-search"
+              class="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/70 px-3 py-2 text-sm outline-none focus:border-sky-300"
+              placeholder="Search author, title, or review text"
+            />
+          </label>
+
+          <label>
+            <span class="text-xs font-medium uppercase tracking-wide text-slate-300">Rating</span>
+            <select
+              id="rating-filter"
+              class="mt-1 w-full rounded-xl border border-white/10 bg-slate-950/70 px-3 py-2 text-sm outline-none focus:border-sky-300"
+            >
+              <option value="">Any</option>
+              <option value="5">5 stars</option>
+              <option value="4">4+ stars</option>
+              <option value="3">3+ stars</option>
+              <option value="2">2+ stars</option>
+              <option value="1">1+ stars</option>
+            </select>
+          </label>
+
+          <button
+            id="search-reviews"
+            class="rounded-xl bg-sky-300 px-5 py-2.5 text-sm font-bold text-slate-950 hover:bg-sky-200"
+            type="button"
+          >
+            Search
+          </button>
+        </div>
+      </section>
+
+      <section
+        id="session-sources"
+        class="rounded-3xl border border-white/10 bg-white/10 p-4 text-xs text-slate-300 shadow-2xl backdrop-blur"
+      >
+        <div class="flex items-center justify-between gap-3">
+          <p class="text-xs font-semibold uppercase tracking-wide text-slate-400">Active Sources</p>
+          <span id="session-source-count" class="rounded-full bg-sky-300/15 px-3 py-1 text-[11px] font-semibold text-sky-100">
+            0
+          </span>
+        </div>
+        <div
+          id="session-source-list"
+          class="mt-2 flex flex-wrap gap-2"
+        ></div>
+        <p id="session-source-empty" class="mt-2 text-[11px] text-slate-500">
+          No sources loaded yet.
+        </p>
+      </section>
+
+      <section class="grid gap-4 lg:grid-cols-[0.85fr_1.15fr]">
+        <section class="flex h-[500px] flex-col rounded-3xl border border-white/10 bg-white/10 p-5 shadow-2xl backdrop-blur">
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <h2 class="text-lg font-semibold">Ingested Reviews</h2>
+              <p id="review-summary" class="mt-1 text-sm text-slate-400">
+                Preview the normalized reviews currently loaded. Total = 0
+              </p>
+            </div>
+            <button id="refresh" class="rounded-xl bg-sky-300 px-4 py-2 text-sm font-bold text-slate-950 hover:bg-sky-200">
+              Refresh
+            </button>
+          </div>
+          <div id="review-list" class="mt-4 grid flex-1 content-start gap-3 overflow-y-auto pr-1 text-sm"></div>
+        </section>
+
+        <section class="flex h-[500px] flex-col rounded-3xl border border-white/10 bg-white/10 p-5 shadow-2xl backdrop-blur">
+          <h2 class="text-lg font-semibold">Chat</h2>
+          <div
+            id="chat-messages"
+            class="mt-4 flex-1 space-y-3 overflow-y-auto rounded-2xl border border-white/10 bg-slate-950/60 p-4 text-sm text-slate-300"
+          >
+            <p id="chat-placeholder">
+              Chat activates after reviews are ingested or a saved session is selected.
+            </p>
+          </div>
+          <div id="chat-suggestions" class="mt-3 flex flex-wrap gap-2 hidden"></div>
+          <div class="mt-4 flex gap-2">
+            <input
+              id="chat-input"
+              disabled
+              class="flex-1 rounded-xl border border-white/10 bg-slate-950/70 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-300 disabled:text-slate-500"
+              placeholder="Ask what reviewers complain about most..."
+            />
+            <button
+              id="chat-send"
+              disabled
+              class="rounded-xl bg-sky-300 px-4 py-2 text-sm font-bold text-slate-950 disabled:bg-sky-300/50 disabled:text-slate-900"
+              type="button"
+            >
+              Send
+            </button>
+          </div>
+        </section>
+      </section>
+
+    </main>
+    <script type="module" src="/js/app.js"></script>
+  </body>
+</html>
