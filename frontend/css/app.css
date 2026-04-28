@@ -7,13 +7,14 @@ body {
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
+#search-section {
+  position: relative;
+  z-index: 40;
+  pointer-events: auto;
+}
+
 .info-popover {
   position: relative;
-  z-index: 10000;
-  isolation: isolate;
-  display: inline-flex;
-  align-items: center;
-  overflow: visible;
 }
 
 .info-popover summary {
@@ -31,6 +32,12 @@ body {
   width: 1.25rem;
 }
 
+#toggle-search {
+  position: relative;
+  z-index: 70;
+  pointer-events: auto;
+}
+
 .info-popover summary::-webkit-details-marker {
   display: none;
 }
@@ -45,25 +52,16 @@ body {
   font-size: 0.75rem;
   min-width: 18rem;
   padding: 0.75rem 0.85rem;
-  position: absolute;
+  position: fixed;
   left: 0;
-  top: 1.6rem;
+  top: 0;
   z-index: 2147483647;
   pointer-events: auto;
-  overflow: visible;
   text-transform: none;
   letter-spacing: normal;
 }
 
 .info-popover[open] .info-popover-panel {
-  display: block;
-}
-
-.info-popover:hover .info-popover-panel {
-  display: block;
-}
-
-.info-popover:focus-within .info-popover-panel {
   display: block;
 }
 

@@ -35,12 +35,12 @@ let activeJobId = null;
 let ingestionInProgress = false;
 let chatInProgress = false;
 
-uploadTrigger.addEventListener("click", () => {
+uploadTrigger?.addEventListener("click", () => {
   if (ingestionInProgress) return;
   reviewFile.click();
 });
 
-reviewFile.addEventListener("change", async () => {
+reviewFile?.addEventListener("change", async () => {
   if (!reviewFile.files.length) return;
   sourceNameInput.value = sessionNameInput.value || reviewFile.files[0].name;
   const formData = new FormData(uploadForm);
@@ -69,7 +69,7 @@ reviewFile.addEventListener("change", async () => {
   pollJob(payload.job.id, payload.source.id);
 });
 
-refreshButton.addEventListener("click", async () => {
+refreshButton?.addEventListener("click", async () => {
   if (sessionFilter.value) {
     await loadSelectedSession();
     return;
@@ -85,17 +85,17 @@ cancelIngestionButton?.addEventListener("click", () => {
   cancelIngestionJob(activeJobId);
 });
 
-searchReviewsButton.addEventListener("click", () => {
+searchReviewsButton?.addEventListener("click", () => {
   lastSourceId = null;
   updateChatState();
   loadReviews();
 });
 
-sessionFilter.addEventListener("change", async () => {
+sessionFilter?.addEventListener("change", async () => {
   await loadSelectedSession();
 });
 
-importUrlButton.addEventListener("click", async (event) => {
+importUrlButton?.addEventListener("click", async (event) => {
   event.preventDefault();
   event.stopPropagation();
   if (ingestionInProgress) return;
@@ -134,7 +134,7 @@ importUrlButton.addEventListener("click", async (event) => {
   pollJob(payload.job.id, payload.source.id);
 });
 
-saveSessionButton.addEventListener("click", async (event) => {
+saveSessionButton?.addEventListener("click", async (event) => {
   event.preventDefault();
   event.stopPropagation();
   if (ingestionInProgress) return;
@@ -171,19 +171,111 @@ saveSessionButton.addEventListener("click", async (event) => {
   updateChatState();
 });
 
-chatSendButton.addEventListener("click", () => {
+chatSendButton?.addEventListener("click", () => {
   sendChatMessage();
 });
 
-chatInput.addEventListener("keydown", (event) => {
+chatInput?.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
     sendChatMessage();
   }
 });
 
-toggleSearchButton.addEventListener("click", () => {
-  setSearchExpanded(searchControls.classList.contains("hidden"));
+const popovers = [...document.querySelectorAll(".info-popover")];
+const popoverParents = new Map();
+
+popovers.forEach((popover) => {
+  const summary = popover.querySelector("summary");
+  const panel = popover.querySelector(".info-popover-panel");
+  if (!summary || !panel) return;
+  popover.dataset.pinned = "false";
+
+  const positionPanel = () => {
+    const rect = summary.getBoundingClientRect();
+    panel.style.display = "block";
+    const panelWidth = panel.offsetWidth || 320;
+    const panelHeight = panel.offsetHeight || 200;
+    let left = rect.left;
+    let top = rect.bottom + 8;
+    if (left + panelWidth > window.innerWidth - 12) {
+      left = Math.max(12, window.innerWidth - panelWidth - 12);
+    }
+    if (top + panelHeight > window.innerHeight - 12) {
+      top = Math.max(12, rect.top - panelHeight - 8);
+    }
+    panel.style.left = `${left}px`;
+    panel.style.top = `${top}px`;
+  };
+
+  const ensurePortal = () => {
+    if (!popoverParents.has(panel)) {
+      popoverParents.set(panel, panel.parentElement);
+    }
+    if (panel.parentElement !== document.body) {
+      document.body.appendChild(panel);
+    }
+  };
+
+  const restorePanel = () => {
+    const parent = popoverParents.get(panel);
+    if (parent && panel.parentElement === document.body) {
+      parent.appendChild(panel);
+    }
+  };
+
+  const showPanel = () => {
+    ensurePortal();
+    popover.setAttribute("open", "");
+    requestAnimationFrame(positionPanel);
+  };
+
+  const hidePanel = () => {
+    popover.removeAttribute("open");
+    panel.style.display = "";
+    restorePanel();
+  };
+
+  summary.addEventListener("click", (event) => {
+    event.preventDefault();
+    const isPinned = popover.dataset.pinned === "true";
+    if (isPinned) {
+      popover.dataset.pinned = "false";
+      hidePanel();
+      return;
+    }
+    popover.dataset.pinned = "true";
+    showPanel();
+  });
+
+  popover.addEventListener("mouseenter", () => {
+    if (popover.dataset.pinned === "true") return;
+    showPanel();
+  });
+
+  popover.addEventListener("mouseleave", () => {
+    if (popover.dataset.pinned === "true") return;
+    hidePanel();
+  });
+
+  panel.addEventListener("mouseleave", () => {
+    if (popover.dataset.pinned === "true") return;
+    hidePanel();
+  });
+});
+
+function toggleSearchExpanded() {
+  if (!searchControls || !toggleSearchButton) return;
+  const isExpanded = toggleSearchButton.getAttribute("aria-expanded") === "true";
+  setSearchExpanded(!isExpanded);
+}
+
+window.reviewlensToggleSearch = toggleSearchExpanded;
+
+toggleSearchButton?.addEventListener("click", (event) => {
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  toggleSearchExpanded();
 });
 
 async function pollJob(jobId, sourceId = null) {
@@ -402,6 +494,11 @@ function setIngestionInProgress(isInProgress) {
   ingestionInProgress = isInProgress;
   importUrlButton.disabled = isInProgress;
   uploadTrigger.disabled = isInProgress;
+  const urlInput = document.querySelector("#scrape-url");
+  if (urlInput) urlInput.disabled = isInProgress;
+  const pageCountInput = document.querySelector("#page-count");
+  if (pageCountInput) pageCountInput.disabled = isInProgress;
+  if (sessionNameInput) sessionNameInput.disabled = isInProgress;
   cancelIngestionButton?.classList.toggle("hidden", !isInProgress);
   updateSaveSessionState();
   updateChatState();
@@ -652,6 +749,8 @@ function formatProvider(provider) {
 }
 
 function setSearchExpanded(isExpanded) {
+  if (!searchControls || !toggleSearchButton) return;
+  searchControls.hidden = !isExpanded;
   searchControls.classList.toggle("hidden", !isExpanded);
   toggleSearchButton.textContent = isExpanded ? "Hide" : "Show";
   toggleSearchButton.setAttribute("aria-expanded", String(isExpanded));
