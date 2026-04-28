@@ -157,7 +157,7 @@ reviewlens-ai/
 │   │   ├── models.py
 │   │   ├── router.py         # platform routing and provider fallback
 │   │   ├── parsers/
-│   │   │   ├── generic.py    # JSON-LD, microdata, embedded JSON, HTML cards
+│   │   │   ├── generic.py    # JSON, HTML cards
 │   │   │   └── review_html.py # TripAdvisor helper parser
 │   │   ├── providers/
 │   │   │   ├── apple_app_store.py # Apple public RSS reviews
@@ -203,38 +203,40 @@ flowchart TD
   start["scrape_url(url, page_count)"]
   apple{"Apple App Store URL?\napps.apple.com/.../id123"}
   google{"Google Play URL?\nplay.google.com/store/apps/details?id=..."}
-  platform["Platform-specific public source"]
-  generic["Generic URL scrape"]
-  bd{"BrightData first?"}
-  bright["BrightData Web Unlocker"]
-  providers["Provider fallback loop\nSCRAPER_PROVIDER_ORDER"]
-  http["Direct HTTP"]
-  zyte["Zyte Extraction API"]
+  appstore["Apple RSS scraper"]
+  gplay["Google Play scraper"]
+  providerFirst{"Provider order starts with brightdata?"}
+  brightAll["BrightData multi-page scrape"]
   parse["Parse reviews"]
-  ok{"Any reviews?"}
+  brightOk{"Reviews found?"}
+  pageLoop["For each page_url (page_urls)"]
+  providerLoop["For each provider in order"]
+  fetch["Fetch page via provider"]
+  pageOk{"Reviews found on page?"}
+  nextProvider["Try next provider"]
+  nextPage["Next page"]
+  anyOk{"Any reviews overall?"}
   done["ScrapeResult"]
   fail["friendly failure to UI\nraw details in server logs"]
 
   start --> apple
-  apple -- yes --> platform
+  apple -- yes --> appstore --> done
   apple -- no --> google
-  google -- yes --> platform
-  google -- no --> generic
-  platform --> parse
-  generic --> bd
-  bd -- yes --> bright
-  bright --> ok
-  ok -- yes --> done
-  ok -- no --> providers
-  bd -- no --> providers
-  providers --> http
-  providers --> bright
-  providers --> zyte
-  http --> parse
-  bright --> parse
-  zyte --> parse
-  parse --> ok
-  ok -- no providers left --> fail
+  google -- yes --> gplay --> done
+  google -- no --> providerFirst
+  providerFirst -- yes --> brightAll --> brightOk
+  brightOk -- yes --> done
+  brightOk -- no --> pageLoop
+  providerFirst -- no --> pageLoop
+  pageLoop --> providerLoop
+  providerLoop --> fetch --> parse --> pageOk
+  pageOk -- yes --> nextPage
+  pageOk -- no --> nextProvider
+  nextProvider --> providerLoop
+  nextPage --> pageLoop
+  pageLoop -- after last page --> anyOk
+  anyOk -- yes --> done
+  anyOk -- no --> fail
 ```
 
 ### Provider and Parser Order
@@ -369,7 +371,7 @@ sequenceDiagram
   participant L as OpenAI
   participant DB as PostgreSQL/pgvector
 
-  U->>F: Select CSV/JSON/JSONL
+  U->>F: Select CSV/JSON
   F->>A: POST /api/import/file
   A->>A: validate extension + max size
   A->>S3: upload original file
@@ -504,7 +506,7 @@ rq worker --url "$REDIS_URL" import scrape
 
 Implemented:
 
-- CSV/JSON/JSONL/NDJSON file import through S3 + RQ.
+- CSV/JSON file import through S3 + RQ.
 - URL ingestion through RQ.
 - BrightData, Zyte, and direct HTTP fallback.
 - Apple App Store RSS reviews.
