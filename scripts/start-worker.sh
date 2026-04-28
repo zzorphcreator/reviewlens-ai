@@ -1,5 +1,4 @@
-#!/usr/bin/env sh
-set -e
+#!/bin/sh
 
 echo "Starting RQ worker"
 echo "REDIS_URL=${REDIS_URL:-<missing>}"
