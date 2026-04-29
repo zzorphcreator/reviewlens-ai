@@ -529,3 +529,13 @@ Still open / future:
 - More robust eval set for RAG answer quality.
 - Optional hybrid search if vector-only retrieval becomes noisy.
 - Authentication/multi-tenancy if this moves beyond demo/internal use.
+
+---
+
+## 12. Future Scope
+
+- **Multitenant support and isolation:** Add authentication, user/workspace ownership, tenant-scoped data access, and hard isolation for sources, sessions, reviews, embeddings, and chat history.
+- **Node.js frontend:** Replace the static HTML/vanilla JS frontend with a Node.js-based frontend, likely Next.js or another React stack, once UI complexity justifies a build pipeline.
+- **Celery task queue:** Replace Redis RQ with Celery if queue routing, retries, scheduling, worker autoscaling, or operational visibility outgrow the current simple RQ setup.
+- **Dedicated vector database:** Move embeddings from PostgreSQL pgvector to Pinecone or another vector database if vector volume, latency, filtering, or multi-tenant isolation requirements exceed what Postgres can handle cleanly.
+- **Expanded model fallback pool:** Add more chat models and providers for scale, quota resilience, regional availability, cost control, and graceful degradation under high user load.

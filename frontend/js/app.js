@@ -44,6 +44,9 @@ uploadTrigger?.addEventListener("click", () => {
 
 reviewFile?.addEventListener("change", async () => {
   if (!reviewFile.files.length) return;
+  if (!sessionFilter.value) {
+    resetWorkspaceSources();
+  }
   const selectedFileName = reviewFile.files[0].name;
   sourceNameInput.value = sessionNameInput.value || selectedFileName;
   const formData = new FormData(uploadForm);
@@ -106,6 +109,9 @@ importUrlButton?.addEventListener("click", async (event) => {
   event.preventDefault();
   event.stopPropagation();
   if (ingestionInProgress) return;
+  if (!sessionFilter.value) {
+    resetWorkspaceSources();
+  }
   const urlInput = document.querySelector("#scrape-url");
   const pageCountInput = document.querySelector("#page-count");
   const url = urlInput?.value;
@@ -877,6 +883,16 @@ function restoreWorkspaceSources() {
   updateSaveSessionState();
   updateChatState();
   updateSourceList();
+}
+
+function resetWorkspaceSources() {
+  workspaceSourceIds.clear();
+  activeSourceDetails.clear();
+  lastSourceId = null;
+  localStorage.removeItem(WORKSPACE_SOURCES_KEY);
+  updateSourceList([]);
+  updateSaveSessionState();
+  updateChatState();
 }
 
 reviewList.textContent = "No reviews loaded yet. Import reviews or use Search to load saved data.";
