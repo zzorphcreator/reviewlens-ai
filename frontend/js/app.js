@@ -497,6 +497,12 @@ async function loadSessions(selectedSessionId = "") {
   } else {
     sessionFilter.value = "";
   }
+
+  if (!sessionFilter.value && workspaceSourceIds.size) {
+    loadReviews();
+    restoreWorkspaceChat();
+    updateSourceList();
+  }
 }
 
 function updateSourceList(sources = null) {
