@@ -22,7 +22,11 @@ from backend.llm.chat import (
 from backend.llm.embeddings import retrieve_relevant_chunks
 from backend.storage.database import get_session
 from backend.storage.models import Review, ReviewSource
-from backend.storage.service import add_chat_message, get_review_session_source_ids
+from backend.storage.service import (
+    add_chat_message,
+    get_review_session_source_ids,
+    list_recent_chat_messages,
+)
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -126,10 +130,18 @@ async def stream_chat_response(
         return
 
     settings = get_settings()
+    conversation: list[dict] | None = None
+    if payload.session_id:
+        recent_messages = await list_recent_chat_messages(
+            db, session_id=payload.session_id, limit=6
+        )
+        if recent_messages:
+            conversation = [{"role": message.role, "content": message.content} for message in recent_messages]
     prompt = build_user_prompt(
         question=payload.question,
         context_chunks=chunks,
         total_review_count=total_review_count,
+        conversation=conversation,
     )
     sources = [
         {"review_id": chunk["review_id"], "source_id": chunk["source_id"], "score": float(chunk["score"])}

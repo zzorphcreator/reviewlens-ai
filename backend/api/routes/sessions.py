@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.storage.database import get_session
 from backend.storage.service import (
     add_chat_message,
+    add_chat_messages,
     create_review_session,
     get_review_session,
     list_chat_messages,
@@ -18,17 +19,18 @@ from backend.storage.service import (
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
 
-class SaveSessionRequest(BaseModel):
-    name: str = Field(min_length=1, max_length=255)
-    source_ids: list[str] = Field(min_length=1)
-    config: dict[str, Any] = Field(default_factory=dict)
-
-
 class ChatMessageRequest(BaseModel):
     role: str = Field(pattern="^(user|assistant|system)$")
     content: str = Field(min_length=1)
     model_used: str | None = Field(default=None, max_length=128)
     latency_ms: int | None = Field(default=None, ge=0)
+
+
+class SaveSessionRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    source_ids: list[str] = Field(min_length=1)
+    config: dict[str, Any] = Field(default_factory=dict)
+    messages: list[ChatMessageRequest] = Field(default_factory=list)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -43,6 +45,8 @@ async def save_session(
             source_ids=payload.source_ids,
             config=payload.config,
         )
+        if payload.messages:
+            await add_chat_messages(db, session_id=review_session.id, messages=payload.messages)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 

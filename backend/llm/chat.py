@@ -73,6 +73,7 @@ def build_user_prompt(
     question: str,
     context_chunks: list[dict],
     total_review_count: int | None = None,
+    conversation: list[dict] | None = None,
 ) -> str:
     excerpts = []
     for index, chunk in enumerate(context_chunks, start=1):
@@ -85,8 +86,17 @@ def build_user_prompt(
         if total_review_count is not None
         else ""
     )
+    history = ""
+    if conversation:
+        lines = ["Recent chat (most recent last):"]
+        for message in conversation:
+            role = message.get("role", "user")
+            label = "User" if role == "user" else "Assistant"
+            lines.append(f"{label}: {message.get('content', '').strip()}")
+        history = "\n".join(lines) + "\n\n"
     return (
         scope_count
+        + history
         + "Current review excerpts:\n\n"
         + "\n\n---\n\n".join(excerpts)
         + f"\n\nQuestion: {question}\n\nAnswer from these excerpts only."

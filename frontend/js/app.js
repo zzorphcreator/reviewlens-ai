@@ -180,6 +180,7 @@ saveSessionButton?.addEventListener("click", async (event) => {
     sessionNameInput.focus();
     return;
   }
+  const messages = collectChatMessages();
   const response = await fetch("/api/sessions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -187,6 +188,7 @@ saveSessionButton?.addEventListener("click", async (event) => {
       name,
       source_ids: [...workspaceSourceIds],
       config: { saved_from: "ui" },
+      messages,
     }),
   });
 
@@ -197,8 +199,13 @@ saveSessionButton?.addEventListener("click", async (event) => {
   }
 
   const payload = await response.json();
+  const sessionId = payload.session.id;
   setStatus(`Saved session "${payload.session.name}" with ${payload.session.review_count} reviews.`);
-  await loadSessions(payload.session.id);
+  if (messages.length) {
+    clearWorkspaceChat();
+  }
+  await loadSessions(sessionId);
+  await loadSelectedSession();
   updateChatState();
 });
 
@@ -618,7 +625,11 @@ async function sendChatMessage() {
         const model = payload.model_used || meta?.model_used;
         const reviewCount = payload.review_count ?? meta?.review_count ?? 0;
         if (model) {
+          assistantMessage.dataset.modelUsed = model;
           appendChatMeta(assistantMessage, `Answered by ${model} from ${reviewCount} reviews.`);
+        }
+        if (payload.latency_ms !== undefined && payload.latency_ms !== null) {
+          assistantMessage.dataset.latencyMs = String(payload.latency_ms);
         }
         persistWorkspaceChat();
       },
@@ -646,6 +657,10 @@ function appendChatMessage(role, content, options = {}) {
       ? "ml-auto max-w-[65%] rounded-2xl bg-sky-300 px-4 py-3 text-slate-950"
       : "mr-auto max-w-[80%] rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 text-slate-200";
   if (options.pending) item.dataset.pending = "true";
+  if (options.modelUsed) item.dataset.modelUsed = options.modelUsed;
+  if (options.latencyMs !== undefined && options.latencyMs !== null) {
+    item.dataset.latencyMs = String(options.latencyMs);
+  }
 
   const text = document.createElement("p");
   text.className = "whitespace-pre-wrap";
@@ -691,7 +706,11 @@ function renderChatHistory(messages) {
       message.role === "assistant" && message.model_used
         ? `Answered by ${message.model_used}.`
         : "";
-    appendChatMessage(message.role, message.content, { meta });
+    appendChatMessage(message.role, message.content, {
+      meta,
+      modelUsed: message.model_used,
+      latencyMs: message.latency_ms,
+    });
   }
 }
 
@@ -987,15 +1006,27 @@ function clearWorkspaceResetPending() {
   localStorage.removeItem(WORKSPACE_RESET_KEY);
 }
 
-function persistWorkspaceChat() {
-  if (sessionFilter.value) return;
-  const messages = [...chatMessages.children]
+function collectChatMessages() {
+  return [...chatMessages.children]
     .filter((node) => node.dataset?.role)
     .map((node) => {
       const text = node.querySelector("[data-message-text='true']")?.textContent || "";
-      return { role: node.dataset.role, content: text };
+      const modelUsed = node.dataset.modelUsed || null;
+      const latencyMsRaw = node.dataset.latencyMs;
+      const latencyMs = latencyMsRaw ? Number(latencyMsRaw) : null;
+      return {
+        role: node.dataset.role,
+        content: text,
+        model_used: modelUsed || undefined,
+        latency_ms: Number.isFinite(latencyMs) ? latencyMs : undefined,
+      };
     })
     .filter((item) => item.content);
+}
+
+function persistWorkspaceChat() {
+  if (sessionFilter.value) return;
+  const messages = collectChatMessages();
   if (!messages.length) {
     localStorage.removeItem(WORKSPACE_CHAT_KEY);
     return;
@@ -1021,7 +1052,14 @@ function restoreWorkspaceChat() {
   chatMessages.replaceChildren();
   for (const message of payload) {
     if (!message?.role || !message?.content) continue;
-    appendChatMessage(message.role, message.content, { skipPersist: true });
+    const meta =
+      message.role === "assistant" && message.model_used ? `Answered by ${message.model_used}.` : "";
+    appendChatMessage(message.role, message.content, {
+      skipPersist: true,
+      meta,
+      modelUsed: message.model_used,
+      latencyMs: message.latency_ms,
+    });
   }
 }
 

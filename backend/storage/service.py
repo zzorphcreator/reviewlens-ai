@@ -267,6 +267,26 @@ async def list_chat_messages(
     )
 
 
+async def list_recent_chat_messages(
+    session: AsyncSession,
+    *,
+    session_id: str,
+    limit: int = 6,
+) -> list[ChatMessage] | None:
+    review_session = await session.get(ReviewSession, session_id)
+    if review_session is None:
+        return None
+    rows = (
+        await session.execute(
+            select(ChatMessage)
+            .where(ChatMessage.session_id == session_id)
+            .order_by(ChatMessage.created_at.desc())
+            .limit(limit)
+        )
+    ).scalars().all()
+    return list(reversed(rows))
+
+
 async def add_chat_message(
     session: AsyncSession,
     *,
@@ -291,6 +311,34 @@ async def add_chat_message(
     await session.commit()
     await session.refresh(message)
     return message
+
+
+async def add_chat_messages(
+    session: AsyncSession,
+    *,
+    session_id: str,
+    messages: list[Any],
+) -> None:
+    review_session = await session.get(ReviewSession, session_id)
+    if review_session is None:
+        raise ValueError(f"Session {session_id} does not exist")
+
+    payloads = [
+        ChatMessage(
+            session_id=session_id,
+            role=message.role,
+            content=message.content,
+            model_used=getattr(message, "model_used", None),
+            latency_ms=getattr(message, "latency_ms", None),
+        )
+        for message in messages
+    ]
+    if not payloads:
+        return
+
+    review_session.updated_at = utc_now()
+    session.add_all(payloads)
+    await session.commit()
 
 
 def serialize_job(job: IngestJob) -> dict[str, Any]:
