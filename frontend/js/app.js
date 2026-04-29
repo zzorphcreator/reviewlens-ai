@@ -712,34 +712,35 @@ function chatScopeAvailable() {
 }
 
 function jobStatusMessage(job, stats) {
+  const jobLabel = job?.id ? `Job ${job.id}: ` : "";
   const base = `Job ${job.status}. Inserted: ${stats.inserted ?? 0}, duplicates: ${
     stats.duplicates ?? 0
   }, rejected: ${stats.rejected ?? 0}.`;
 
   if (job.status === "running" && stats.total_pages) {
     if (stats.progress_stage === "embedding") {
-      return `Embedding reviews for RAG. ${base}`;
+      return `${jobLabel}Embedding reviews for RAG. ${base}`;
     }
     const currentPage = Math.max(Number(stats.current_page || 1), 1);
     const totalPages = Number(stats.total_pages);
     const provider = stats.current_provider ? ` via ${formatProvider(stats.current_provider)}` : "";
     const pageMessage = `Processing page ${currentPage} of ${totalPages}${provider}.`;
-    return `${pageMessage} ${base}`;
+    return `${jobLabel}${pageMessage} ${base}`;
   }
 
   if (job.status === "running" && stats.progress_stage === "embedding") {
-    return `Embedding reviews for RAG. ${base}`;
+    return `${jobLabel}Embedding reviews for RAG. ${base}`;
   }
 
   if (job.status === "failed" && job.error) {
-    return `${base} ${friendlyJobError(job.error)}`;
+    return `${jobLabel}${base} ${friendlyJobError(job.error)}`;
   }
 
   if (stats.provider) {
-    return `${base} Provider: ${stats.provider}.`;
+    return `${jobLabel}${base} Provider: ${stats.provider}.`;
   }
 
-  return base;
+  return `${jobLabel}${base}`;
 }
 
 function friendlyJobError(error) {
