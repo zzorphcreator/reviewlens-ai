@@ -28,6 +28,8 @@ const toggleSearchButton = document.querySelector("#toggle-search");
 const SEARCH_EXPANDED_KEY = "reviewlens.searchExpanded";
 const ACTIVE_JOB_KEY = "reviewlens.activeJob";
 const WORKSPACE_SOURCES_KEY = "reviewlens.workspaceSources";
+const WORKSPACE_CHAT_KEY = "reviewlens.workspaceChat";
+const WORKSPACE_RESET_KEY = "reviewlens.workspaceResetPending";
 
 let lastSourceId = null;
 const workspaceSourceIds = new Set();
@@ -45,7 +47,11 @@ uploadTrigger?.addEventListener("click", () => {
 reviewFile?.addEventListener("change", async () => {
   if (!reviewFile.files.length) return;
   if (!sessionFilter.value) {
-    resetWorkspaceSources();
+    queueWorkspaceReset();
+  } else {
+    sessionFilter.value = "";
+    await loadSelectedSession();
+    queueWorkspaceReset();
   }
   const selectedFileName = reviewFile.files[0].name;
   sourceNameInput.value = sessionNameInput.value || selectedFileName;
@@ -110,7 +116,11 @@ importUrlButton?.addEventListener("click", async (event) => {
   event.stopPropagation();
   if (ingestionInProgress) return;
   if (!sessionFilter.value) {
-    resetWorkspaceSources();
+    queueWorkspaceReset();
+  } else {
+    sessionFilter.value = "";
+    await loadSelectedSession();
+    queueWorkspaceReset();
   }
   const urlInput = document.querySelector("#scrape-url");
   const pageCountInput = document.querySelector("#page-count");
@@ -319,13 +329,32 @@ async function pollJob(jobId, sourceId = null) {
       clearInterval(pollTimer);
       setIngestionInProgress(false);
       activeJobId = null;
+      const shouldExitSession = Boolean(sessionFilter.value);
+      const activeJobMeta = getActiveJobMeta();
+      const pendingSourceDetail =
+        (sourceId && activeSourceDetails.get(sourceId)) ||
+        sourceDetailFromActiveJob(activeJobMeta, sourceId);
       clearActiveJob();
+      if (job.status !== "done") {
+        clearWorkspaceResetPending();
+      }
       if (job.status === "done" && sourceId) {
+        if (isWorkspaceResetPending()) {
+          resetWorkspaceSources();
+          if (pendingSourceDetail) {
+            activeSourceDetails.set(sourceId, pendingSourceDetail);
+          }
+          clearWorkspaceResetPending();
+        }
         workspaceSourceIds.add(sourceId);
         updateSaveSessionState();
         updateChatState();
         updateSourceList();
         persistWorkspaceSources();
+        if (shouldExitSession) {
+          sessionFilter.value = "";
+          await loadSelectedSession();
+        }
       }
       await loadReviews();
     }
@@ -347,6 +376,7 @@ async function cancelIngestionJob(jobId) {
   setIngestionInProgress(false);
   activeJobId = null;
   clearActiveJob();
+  clearWorkspaceResetPending();
 }
 
 async function loadReviews() {
@@ -412,6 +442,7 @@ async function loadSelectedSession() {
 
   if (!sessionFilter.value) {
     resetChatPanel("Chat activates after reviews are ingested or a saved session is selected.");
+    restoreWorkspaceChat();
     sessionNameInput.value = "";
     updateChatState();
     await loadReviews();
@@ -426,6 +457,8 @@ async function loadSelectedSession() {
   }
 
   const payload = await response.json();
+  clearWorkspaceResetPending();
+  clearWorkspaceChat();
   sessionNameInput.value = payload.session.name;
   renderChatHistory(payload.messages || []);
   updateChatState();
@@ -559,6 +592,7 @@ async function sendChatMessage() {
     assistantText.textContent = `Chat failed: ${error.detail}`;
     assistantMessage.dataset.pending = "false";
     setChatInProgress(false);
+    persistWorkspaceChat();
     return;
   }
 
@@ -580,16 +614,19 @@ async function sendChatMessage() {
         if (model) {
           appendChatMeta(assistantMessage, `Answered by ${model} from ${reviewCount} reviews.`);
         }
+        persistWorkspaceChat();
       },
       onError(payload) {
         assistantMessage.dataset.pending = "false";
         if (!assistantText.textContent) assistantText.textContent = `Chat failed: ${payload.detail}`;
         appendChatMeta(assistantMessage, `Error: ${payload.detail}`);
+        persistWorkspaceChat();
       },
     });
   } catch (error) {
     assistantMessage.dataset.pending = "false";
     assistantText.textContent = `Chat stream failed: ${error.message}`;
+    persistWorkspaceChat();
   }
   setChatInProgress(false);
 }
@@ -597,6 +634,7 @@ async function sendChatMessage() {
 function appendChatMessage(role, content, options = {}) {
   chatMessages.querySelector("#chat-placeholder")?.remove();
   const item = document.createElement("div");
+  item.dataset.role = role;
   item.className =
     role === "user"
       ? "ml-auto max-w-[65%] rounded-2xl bg-sky-300 px-4 py-3 text-slate-950"
@@ -614,6 +652,9 @@ function appendChatMessage(role, content, options = {}) {
   }
   chatMessages.append(item);
   chatMessages.scrollTop = chatMessages.scrollHeight;
+  if (!options.skipPersist) {
+    persistWorkspaceChat();
+  }
   return item;
 }
 
@@ -642,7 +683,7 @@ function renderChatHistory(messages) {
   for (const message of messages) {
     const meta =
       message.role === "assistant" && message.model_used
-        ? `Answered by ${message.model_used}${message.latency_ms ? ` in ${message.latency_ms} ms` : ""}.`
+        ? `Answered by ${message.model_used}.`
         : "";
     appendChatMessage(message.role, message.content, { meta });
   }
@@ -842,6 +883,30 @@ function restoreActiveJob() {
   pollJob(payload.jobId, payload.sourceId || null);
 }
 
+function getActiveJobMeta() {
+  const raw = localStorage.getItem(ACTIVE_JOB_KEY);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    return null;
+  }
+}
+
+function sourceDetailFromActiveJob(meta, sourceId) {
+  if (!meta || !sourceId || meta.sourceId !== sourceId) return null;
+  const detail = {
+    id: sourceId,
+    name: meta.sourceName || "",
+    platform: meta.type === "file" ? "file" : "url",
+    url: meta.type === "url" ? meta.url || "" : "",
+    config: meta.type === "file" && meta.fileName ? { filename: meta.fileName } : {},
+  };
+  if (!detail.name && detail.url) detail.name = detail.url;
+  if (!detail.name && detail.config?.filename) detail.name = detail.config.filename;
+  return detail;
+}
+
 function persistWorkspaceSources() {
   const items = [...workspaceSourceIds].map((sourceId) => {
     const source = activeSourceDetails.get(sourceId) || { id: sourceId };
@@ -883,20 +948,93 @@ function restoreWorkspaceSources() {
   updateSaveSessionState();
   updateChatState();
   updateSourceList();
+  if (workspaceSourceIds.size && !sessionFilter.value) {
+    loadReviews();
+    restoreWorkspaceChat();
+  }
 }
 
 function resetWorkspaceSources() {
   workspaceSourceIds.clear();
   activeSourceDetails.clear();
   lastSourceId = null;
+  clearWorkspaceResetPending();
+  clearWorkspaceChat();
   localStorage.removeItem(WORKSPACE_SOURCES_KEY);
   updateSourceList([]);
   updateSaveSessionState();
   updateChatState();
+  resetChatPanel("Chat activates after reviews are ingested or a saved session is selected.");
+}
+
+function queueWorkspaceReset() {
+  if (sessionFilter.value) return;
+  if (workspaceSourceIds.size) return;
+  localStorage.setItem(WORKSPACE_RESET_KEY, "true");
+}
+
+function isWorkspaceResetPending() {
+  return localStorage.getItem(WORKSPACE_RESET_KEY) === "true";
+}
+
+function clearWorkspaceResetPending() {
+  localStorage.removeItem(WORKSPACE_RESET_KEY);
+}
+
+function persistWorkspaceChat() {
+  if (sessionFilter.value) return;
+  const messages = [...chatMessages.children]
+    .filter((node) => node.dataset?.role)
+    .map((node) => {
+      const text = node.querySelector("[data-message-text='true']")?.textContent || "";
+      return { role: node.dataset.role, content: text };
+    })
+    .filter((item) => item.content);
+  if (!messages.length) {
+    localStorage.removeItem(WORKSPACE_CHAT_KEY);
+    return;
+  }
+  localStorage.setItem(WORKSPACE_CHAT_KEY, JSON.stringify(messages));
+}
+
+function restoreWorkspaceChat() {
+  if (sessionFilter.value) return;
+  const raw = localStorage.getItem(WORKSPACE_CHAT_KEY);
+  if (!raw) return;
+  let payload = null;
+  try {
+    payload = JSON.parse(raw);
+  } catch (error) {
+    clearWorkspaceChat();
+    return;
+  }
+  if (!Array.isArray(payload) || !payload.length) {
+    clearWorkspaceChat();
+    return;
+  }
+  chatMessages.replaceChildren();
+  for (const message of payload) {
+    if (!message?.role || !message?.content) continue;
+    appendChatMessage(message.role, message.content, { skipPersist: true });
+  }
+}
+
+function clearWorkspaceChat() {
+  localStorage.removeItem(WORKSPACE_CHAT_KEY);
+}
+
+function resetWorkspaceOnNewWindow() {
+  const nav = performance.getEntriesByType("navigation")[0];
+  if (nav?.type === "reload" || nav?.type === "back_forward") {
+    return;
+  }
+  resetWorkspaceSources();
+  clearActiveJob();
 }
 
 reviewList.textContent = "No reviews loaded yet. Import reviews or use Search to load saved data.";
 restoreSearchExpandedState();
+resetWorkspaceOnNewWindow();
 restoreActiveJob();
 restoreWorkspaceSources();
 loadSessions("");
