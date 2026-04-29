@@ -26,6 +26,8 @@ const sessionSourceEmpty = document.querySelector("#session-source-empty");
 const searchControls = document.querySelector("#search-controls");
 const toggleSearchButton = document.querySelector("#toggle-search");
 const SEARCH_EXPANDED_KEY = "reviewlens.searchExpanded";
+const ACTIVE_JOB_KEY = "reviewlens.activeJob";
+const WORKSPACE_SOURCES_KEY = "reviewlens.workspaceSources";
 
 let lastSourceId = null;
 const workspaceSourceIds = new Set();
@@ -42,7 +44,8 @@ uploadTrigger?.addEventListener("click", () => {
 
 reviewFile?.addEventListener("change", async () => {
   if (!reviewFile.files.length) return;
-  sourceNameInput.value = sessionNameInput.value || reviewFile.files[0].name;
+  const selectedFileName = reviewFile.files[0].name;
+  sourceNameInput.value = sessionNameInput.value || selectedFileName;
   const formData = new FormData(uploadForm);
   setIngestionInProgress(true);
   setStatus("Uploading file...", false, true);
@@ -66,6 +69,10 @@ reviewFile?.addEventListener("change", async () => {
   reviewFile.value = "";
   setStatus(`Queued import job ${payload.job.id}.`, false, true);
   activeJobId = payload.job.id;
+  persistActiveJob(payload.job.id, payload.source.id, {
+    type: "file",
+    fileName: selectedFileName,
+  });
   pollJob(payload.job.id, payload.source.id);
 });
 
@@ -99,8 +106,10 @@ importUrlButton?.addEventListener("click", async (event) => {
   event.preventDefault();
   event.stopPropagation();
   if (ingestionInProgress) return;
-  const url = document.querySelector("#scrape-url").value;
-  const pageCount = Number(document.querySelector("#page-count").value || "1");
+  const urlInput = document.querySelector("#scrape-url");
+  const pageCountInput = document.querySelector("#page-count");
+  const url = urlInput?.value;
+  const pageCount = Number(pageCountInput?.value || "1");
   const sourceName = sessionNameInput.value;
   if (!url) {
     setStatus("Enter a URL before importing reviews.", true);
@@ -131,6 +140,12 @@ importUrlButton?.addEventListener("click", async (event) => {
   activeSourceDetails.set(payload.source.id, payload.source);
   setStatus(`Queued scrape job ${payload.job.id}.`, false, true);
   activeJobId = payload.job.id;
+  persistActiveJob(payload.job.id, payload.source.id, {
+    type: "url",
+    url,
+    pageCount,
+    sourceName: sourceName || "",
+  });
   pollJob(payload.job.id, payload.source.id);
 });
 
@@ -298,11 +313,13 @@ async function pollJob(jobId, sourceId = null) {
       clearInterval(pollTimer);
       setIngestionInProgress(false);
       activeJobId = null;
+      clearActiveJob();
       if (job.status === "done" && sourceId) {
         workspaceSourceIds.add(sourceId);
         updateSaveSessionState();
         updateChatState();
         updateSourceList();
+        persistWorkspaceSources();
       }
       await loadReviews();
     }
@@ -323,6 +340,7 @@ async function cancelIngestionJob(jobId) {
   pollTimer = null;
   setIngestionInProgress(false);
   activeJobId = null;
+  clearActiveJob();
 }
 
 async function loadReviews() {
@@ -466,6 +484,9 @@ function updateSourceList(sources = null) {
     chip.textContent = detail ? `${shortSourceId(source.id)} · ${detail}` : shortSourceId(source.id);
     chip.title = detail ? `${source.id} · ${detail}` : source.id;
     sessionSourceList.append(chip);
+  }
+  if (sources === null) {
+    persistWorkspaceSources();
   }
 }
 
@@ -761,8 +782,106 @@ function restoreSearchExpandedState() {
   setSearchExpanded(localStorage.getItem(SEARCH_EXPANDED_KEY) === "true");
 }
 
+function persistActiveJob(jobId, sourceId, meta = {}) {
+  if (!jobId) return;
+  localStorage.setItem(
+    ACTIVE_JOB_KEY,
+    JSON.stringify({
+      jobId,
+      sourceId: sourceId || null,
+      ...meta,
+    })
+  );
+}
+
+function clearActiveJob() {
+  localStorage.removeItem(ACTIVE_JOB_KEY);
+}
+
+function restoreActiveJob() {
+  const raw = localStorage.getItem(ACTIVE_JOB_KEY);
+  if (!raw) return;
+  let payload = null;
+  try {
+    payload = JSON.parse(raw);
+  } catch (error) {
+    clearActiveJob();
+    return;
+  }
+  if (!payload?.jobId) {
+    clearActiveJob();
+    return;
+  }
+  activeJobId = payload.jobId;
+  if (payload.type === "url" && payload.url) {
+    const urlInput = document.querySelector("#scrape-url");
+    const pageCountInput = document.querySelector("#page-count");
+    if (urlInput) urlInput.value = payload.url;
+    if (pageCountInput && payload.pageCount) {
+      pageCountInput.value = String(payload.pageCount);
+    }
+    if (sessionNameInput && payload.sourceName) {
+      sessionNameInput.value = payload.sourceName;
+    }
+  }
+  if (payload.type === "file" && payload.fileName) {
+    if (sessionNameInput && !sessionNameInput.value) {
+      sessionNameInput.value = payload.fileName;
+    }
+    setStatus(`Resuming ingestion job ${payload.jobId} (file: ${payload.fileName})...`, false, true);
+  }
+  setIngestionInProgress(true);
+  setStatus(`Resuming ingestion job ${payload.jobId}...`, false, true);
+  pollJob(payload.jobId, payload.sourceId || null);
+}
+
+function persistWorkspaceSources() {
+  const items = [...workspaceSourceIds].map((sourceId) => {
+    const source = activeSourceDetails.get(sourceId) || { id: sourceId };
+    return {
+      id: source.id,
+      name: source.name,
+      platform: source.platform,
+      url: source.url,
+      config: source.config,
+    };
+  });
+  if (!items.length) {
+    localStorage.removeItem(WORKSPACE_SOURCES_KEY);
+    return;
+  }
+  localStorage.setItem(WORKSPACE_SOURCES_KEY, JSON.stringify(items));
+}
+
+function restoreWorkspaceSources() {
+  const raw = localStorage.getItem(WORKSPACE_SOURCES_KEY);
+  if (!raw) return;
+  let payload = null;
+  try {
+    payload = JSON.parse(raw);
+  } catch (error) {
+    localStorage.removeItem(WORKSPACE_SOURCES_KEY);
+    return;
+  }
+  if (!Array.isArray(payload)) {
+    localStorage.removeItem(WORKSPACE_SOURCES_KEY);
+    return;
+  }
+  workspaceSourceIds.clear();
+  for (const source of payload) {
+    if (!source?.id) continue;
+    workspaceSourceIds.add(source.id);
+    activeSourceDetails.set(source.id, source);
+  }
+  updateSaveSessionState();
+  updateChatState();
+  updateSourceList();
+}
+
 reviewList.textContent = "No reviews loaded yet. Import reviews or use Search to load saved data.";
 restoreSearchExpandedState();
+restoreActiveJob();
+restoreWorkspaceSources();
 loadSessions("");
 updateSaveSessionState();
 updateChatState();
